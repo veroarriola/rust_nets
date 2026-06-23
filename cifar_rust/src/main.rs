@@ -1,76 +1,17 @@
 use burn::backend::{Wgpu, wgpu::WgpuDevice, Autodiff};
-use burn::data::dataloader::batcher::Batcher;
 use burn::data::dataloader::DataLoaderBuilder;
-//use burn::data::dataset::vision::{Cifar10Dataset, Cifar10Item};
-//use burn::data::dataset::source::huggingface::HuggingfaceDataset;
 
 
 use burn::module::Module;
 use burn::nn::{Linear, LinearConfig, Relu};
 use burn::nn::loss::CrossEntropyLossConfig;
 use burn::optim::{AdamConfig, Optimizer};
-use burn::tensor::{backend::Backend, Int, Tensor, TensorData};
+use burn::tensor::{backend::Backend, Tensor};
 
-//use ndarray::Array2;
+// Datos
+use cifar_rust::{load_cifar_folder, CifarBatcher};
+
 use indicatif::ProgressBar;
-
-
-// -.- Datos
-
-use burn::data::dataset::InMemDataset;
-use std::fs;
-
-// 1. Definimos cómo se ve un elemento de nuestro dataset
-#[derive(Clone, Debug)]
-pub struct CifarItem {
-    pub pixels: Vec<f32>, // Guardaremos la imagen aplanada
-    pub label: i64,        // El índice de la clase (0 a 9)
-}
-
-// 2. Creamos nuestro clon de ImageFolder
-pub fn cargar_image_folder(ruta_base: &str) -> InMemDataset<CifarItem> {
-    let mut items = Vec::new();
-
-    // CIFAR-10 carpetas
-    let clases = [
-        "airplane", "automobile", "bird", "cat", "deer",
-        "dog", "frog", "horse", "ship", "truck"
-    ];
-
-    println!("Cargando imágenes desde {}...", ruta_base);
-
-    for (label_idx, clase) in clases.iter().enumerate() {
-        let path_clase = format!("{}/{}", ruta_base, clase);
-
-        // Leemos el directorio de cada clase
-        if let Ok(entradas) = fs::read_dir(&path_clase) {
-            for entrada in entradas.flatten() {
-                let path_archivo = entrada.path();
-
-                // Si es una imagen válida, la abrimos
-                if let Ok(img) = image::open(&path_archivo) {
-                    let rgb = img.to_rgb8();
-                    let mut pixels_f32 = Vec::with_capacity(3 * 32 * 32);
-
-                    // Convertimos los píxeles (0-255) a floats normalizados (0.0 - 1.0)
-                    for pixel in rgb.pixels() {
-                        pixels_f32.push(pixel[0] as f32 / 255.0); // R
-                        pixels_f32.push(pixel[1] as f32 / 255.0); // G
-                        pixels_f32.push(pixel[2] as f32 / 255.0); // B
-                    }
-
-                    items.push(CifarItem {
-                        pixels: pixels_f32,
-                        label: label_idx as i64,
-                    });
-                }
-            }
-        }
-    }
-
-    println!("¡Se cargaron {} imágenes!", items.len());
-    InMemDataset::new(items) // Retornamos el dataset de Burn listo para usarse
-}
 
 
 // -.- Red densa .-.
@@ -113,45 +54,6 @@ impl<B: Backend> Model<B> {
 }
 
 
-// -.- Manejo de datos por lotes .-.
-
-#[derive(Clone)]
-struct CifarBatcher<B: Backend> {
-    device: B::Device,
-}
-
-#[derive(Clone, Debug)]
-struct CifarBatch<B: Backend> {
-    images: Tensor<B, 2>,         // [batch_size, 3072]
-    targets: Tensor<B, 1, Int>,   // [batch_size]
-}
-
-impl<B: Backend> Batcher<B, CifarItem, CifarBatch<B>> for CifarBatcher<B> {
-    fn batch(&self, items: Vec<CifarItem>, device: &B::Device) -> CifarBatch<B> {
-        let _batch_size = items.len();
-
-        // Convertir imágenes a tensores, aplanar [3, 32, 32] -> [3072], y normalizar 0-1
-        let images = items
-            .iter()
-            .map(|item| Tensor::<B, 1>::from_data(TensorData::from(item.pixels.as_slice()), device))
-            .map(|tensor| tensor.reshape([1, 3072])) // Aplanar
-            //.map(|tensor| tensor / 255.0) // Normalizar f32
-            .collect();
-
-        let images = Tensor::cat(images, 0);
-
-        // Convertir objetivos (targets)
-        let targets = items
-            .iter()
-            .map(|item| Tensor::<B, 1, Int>::from_data(TensorData::from([item.label as i32]), device))
-            .collect();
-
-        let targets = Tensor::cat(targets, 0);
-
-        CifarBatch { images, targets }
-    }
-}
-
 
 // -.- Entrenamiento .-.
 
@@ -162,27 +64,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // a. Inicializar Rerun
     let rec = rerun::RecordingStreamBuilder::new("cifar10_mlp_manual").spawn()?;
 
-    // Nombres de las clases de CIFAR-10 para la matriz de confusión
-    //let class_names = ["avion", "auto", "ave", "gato", "ciervo", "perro", "rana", "caballo", "barco", "camion"];
-
     // b. Configurar Dispositivo (GPU por defecto en Wgpu)
     let device = WgpuDevice::default();
     println!("Entrenando en: {:?}", device);
 
     // Cargas el dataset de entrenamiento y test
-    let dataset_train = cargar_image_folder("cifar10_imagenes/train");
-    let dataset_test = cargar_image_folder("cifar10_imagenes/test");
+    let dataset_train = load_cifar_folder("cifar10_images/train");
+    let dataset_test = load_cifar_folder("cifar10_images/test");
 
     // c. Preparar Datos
 
     let batch_size = 64;
 
-    let dataloader_train = DataLoaderBuilder::new(CifarBatcher::<MyBackend> { device: device.clone() })
+    let dataloader_train = DataLoaderBuilder::new(CifarBatcher { })
         .batch_size(batch_size)
         .shuffle(42)
         .build(dataset_train);
 
-    let dataloader_test = DataLoaderBuilder::new(CifarBatcher::<MyBackend> { device: device.clone() })
+    let dataloader_test = DataLoaderBuilder::new(CifarBatcher { })
         .batch_size(batch_size)
         .build(dataset_test);
 
