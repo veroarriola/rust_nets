@@ -1,0 +1,20 @@
+[package]
+name = "cifar_rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# El núcleo de Burn y su backend de GPU
+burn = { version = "0.21.0", features = ["wgpu", "dataset", "train", "vision"] }
+
+# Para visualización avanzada
+rerun = "0.33.1"
+
+# Utilidades para manejar imágenes de CIFAR (opcional, Burn tiene datasets integrados)
+image = "0.25.10"
+
+# Utilidad para cálculos de matrices fuera de la GPU (para la matriz de confusión)
+ndarray = "0.17.2"
+
+# Para reportar progreso en consola
+indicatif = "0.18.4"
