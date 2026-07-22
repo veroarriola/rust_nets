@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-//use burn::record::{CompactRecorder, Recorder};
 //use std::fs;
 
 
@@ -14,20 +13,12 @@ pub enum WorkerEvent {
 
 #[derive(Debug, Clone)]
 pub enum ToWorker {
-    Start(crate::burn_functions::WorkerConfig),
+    Start(WorkerConfig),
     Pause,
     Stop,
     LoadCheckpoint(String),
+    Exit,
 }
-
-
-#[derive(PartialEq)]
-pub enum TrainingStatus {
-    Idle,
-    Training,
-    Paused,
-}
-
 
 #[derive(Debug, Clone)]
 pub enum FromWorker {
@@ -35,7 +26,8 @@ pub enum FromWorker {
     CheckpointSaved { path: String, epoch: usize },
     Finished,
     Error(String),
-    CheckpointLoaded(TrainingMeta), // Nuevo
+    CheckpointLoaded(TrainingMeta),
+    WorkerExited,
 }
 
 // El esquema de nuestro meta.json
@@ -44,4 +36,19 @@ pub struct TrainingMeta {
     pub epoch: usize,
     pub seed: u64,
     pub lr: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkerConfig {
+    pub seed: u64,
+    pub lr: f32,
+    pub target_epochs: usize,
+    pub validation_interval: usize,
+}
+
+#[derive(PartialEq)]
+pub enum TrainingStatus {
+    Idle,
+    Training,
+    Paused,
 }

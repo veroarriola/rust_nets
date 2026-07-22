@@ -1,4 +1,4 @@
-use iced::{Task, Element, Theme, Length, Subscription};
+use iced::{Task, Element, Theme, Length};
 use iced::widget::{button, column, row, text, text_input, container, Space};
 use iced::color;
 use iced::futures::SinkExt; // Necesario para hacer output.send(...).await
@@ -9,8 +9,8 @@ mod cifar_data;
 mod cifar_net;
 mod burn_functions; 
 
-use training_state::{WorkerEvent, ToWorker, TrainingStatus, FromWorker};
-use burn_functions::{WorkerConfig, worker_loop};
+use training_state::{WorkerEvent, ToWorker, FromWorker, TrainingStatus, WorkerConfig};
+use burn_functions::{worker_loop};
 
 
 // --- EVENTOS DEL SUBSCRIPTOR ---
@@ -26,6 +26,9 @@ pub enum UiMessage {
     BtnStopPressed,
     BtnLoadPressed(String),
     WorkerStatusChanged(WorkerEvent),
+    WindowCloseRequested,
+    BtnLoadCheckpointPressed,
+    CheckpointSelected(Option<String>), // Option porque el usuario puede cancelar la ventana
 }
 
 
@@ -41,7 +44,6 @@ pub struct CifarExperimenter {
     checkpoints_disponibles: Vec<String>,
     
     // El transmisor para enviarle comandos (Pausa, Iniciar) al hilo de Burn
-    //worker_tx: Option<mpsc::UnboundedSender<ToWorker>>,
     worker_tx: Option<tokio::sync::mpsc::UnboundedSender<ToWorker>>,
 }
 
@@ -65,6 +67,34 @@ impl CifarExperimenter {
 
     pub fn update(&mut self, message: UiMessage) -> Task<UiMessage> {
         match message {
+            UiMessage::BtnLoadCheckpointPressed => {
+                // Abrimos el explorador de archivos sin bloquear la UI
+                return iced::Task::perform(
+                    async {
+                        let folder = rfd::AsyncFileDialog::new()
+                            .set_title("Selecciona la carpeta del checkpoint (ej. epoch_10)")
+                            .pick_folder()
+                            .await;
+                        
+                        folder.map(|f| f.path().display().to_string())
+                    },
+                    UiMessage::CheckpointSelected,
+                );
+            }
+
+            UiMessage::CheckpointSelected(Some(path)) => {
+                if let Some(tx) = &self.worker_tx {
+                    println!("Solicitando al Worker cargar: {}", path);
+                    let _ = tx.send(ToWorker::LoadCheckpoint(path));
+                }
+                iced::Task::none()
+            }
+
+            UiMessage::CheckpointSelected(None) => {
+                // El usuario cerró la ventana sin elegir nada, no hacemos nada.
+                iced::Task::none()
+            }
+
             UiMessage::InputSeedChanged(val) => {
                 self.input_seed = val;
                 Task::none()
@@ -157,6 +187,7 @@ impl CifarExperimenter {
                                 
                                 // Lo ponemos en pausa para que el usuario decida cuándo seguir
                                 self.status = TrainingStatus::Paused;
+                                println!("¡Checkpoint cargado con éxito! Época actual: {}", meta.epoch);
                             }
                             FromWorker::Finished => {
                                 self.status = TrainingStatus::Idle;
@@ -165,10 +196,25 @@ impl CifarExperimenter {
                                 println!("Error en worker: {}", e);
                                 self.status = TrainingStatus::Idle;
                             }
+                            FromWorker::WorkerExited => {
+                                println!("Worker terminado de forma segura. Apagando...");
+                                std::process::exit(0);
+                            }
                         }
                         Task::none()
                     }
                 }
+            }
+
+            UiMessage::WindowCloseRequested => {
+                if let Some(tx) = &self.worker_tx {
+                    println!("Pidiendo al Worker que termine...");
+                    let _ = tx.send(ToWorker::Exit);
+                } else {
+                    // Si el Worker nunca se conectó, cerramos de inmediato
+                    std::process::exit(0);
+                }
+                Task::none()
             }
         }
     }
@@ -188,13 +234,19 @@ impl CifarExperimenter {
         let botones = match self.status {
             TrainingStatus::Idle => {
                 let btn_iniciar = button("Iniciar Serie");
+                let btn_cargar = button("Cargar Checkpoint");
+
                 // Solo activamos el botón si el canal de comunicación está listo
-                let btn_iniciar = if self.worker_tx.is_some() {
-                    btn_iniciar.on_press(UiMessage::BtnStartPressed)
+                let (btn_iniciar, btn_cargar) = if self.worker_tx.is_some() {
+                    (
+                        btn_iniciar.on_press(UiMessage::BtnStartPressed),
+                        btn_cargar.on_press(UiMessage::BtnLoadCheckpointPressed)
+                    )
                 } else {
-                    btn_iniciar
+                    (btn_iniciar, btn_cargar)
                 };
-                row![btn_iniciar]
+                
+                row![btn_iniciar, btn_cargar]
             }
             
             TrainingStatus::Training => row![
@@ -204,15 +256,21 @@ impl CifarExperimenter {
             
             TrainingStatus::Paused => {
                 let btn_reanudar = button("Reanudar");
+                let btn_cargar = button("Cargar Otro");
+
                 // También protegemos la reanudación por si el canal se perdiera
-                let btn_reanudar = if self.worker_tx.is_some() {
-                    btn_reanudar.on_press(UiMessage::BtnStartPressed)
+                let (btn_reanudar, btn_cargar) = if self.worker_tx.is_some() {
+                    (
+                        btn_reanudar.on_press(UiMessage::BtnStartPressed),
+                        btn_cargar.on_press(UiMessage::BtnLoadCheckpointPressed)
+                    )
                 } else {
-                    btn_reanudar
+                    (btn_reanudar, btn_cargar)
                 };
                 
                 row![
                     btn_reanudar,
+                    btn_cargar,
                     button("Detener").on_press(UiMessage::BtnStopPressed)
                 ]
             }
@@ -252,33 +310,45 @@ impl CifarExperimenter {
     }
 
     // Aquí es donde Iced escucha al Worker permanentemente
-    pub fn subscription(&self) -> Subscription<UiMessage> {
-        iced::Subscription::run(
-            // Añadimos "||" para convertir esto en una función constructora
+    pub fn subscription(&self) -> iced::Subscription<UiMessage> {
+        // 1. Escuchamos los eventos nativos de la ventana
+        // AÑADIDO: El tercer parámetro `_window_id` que exige Iced 0.14
+        let eventos_ventana = iced::event::listen_with(|event, _status, _window_id| {
+            // CORREGIDO: Eliminamos el `_,` porque Window ahora solo tiene 1 campo
+            if let iced::Event::Window(iced::window::Event::CloseRequested) = event {
+                Some(UiMessage::WindowCloseRequested)
+            } else {
+                None
+            }
+        });
+
+        // 2. Suscribir al trabajador
+        let worker_sub = iced::Subscription::run(
             || iced::stream::channel(
                 100, // Buffer de mensajes
                 |mut output: iced::futures::channel::mpsc::Sender<WorkerEvent>| async move {
-                    // Creamos dos canales: Uno para mandar comandos al Worker, otro para recibir sus resultados
+                    // Creamos dos canales
                     let (tx_to_worker, rx_to_worker) = tokio::sync::mpsc::unbounded_channel();
                     let (tx_from_worker, mut rx_from_worker) = tokio::sync::mpsc::unbounded_channel();
 
-                    // Desacoplamos el entrenamiento en un hilo puro del sistema operativo
+                    // Desacoplamos el entrenamiento
                     std::thread::spawn(move || {
                         worker_loop(rx_to_worker, tx_from_worker);
                     });
 
-                    // 1. Enviamos el "control remoto" a la UI para que guarde el transmisor
+                    // 1. Enviamos el "control remoto" a la UI
                     let _ = output.send(WorkerEvent::Ready(tx_to_worker)).await;
 
-                    // 2. Nos quedamos en un bucle infinito escuchando las métricas de Burn
+                    // 2. Bucle infinito escuchando a Burn
                     while let Some(msg) = rx_from_worker.recv().await {
                         let _ = output.send(WorkerEvent::Update(msg)).await;
                     }
-
-                    unreachable!() // Este canal nunca debería morir mientras la app viva
                 }
             )
-        ).map(UiMessage::WorkerStatusChanged)
+        ).map(UiMessage::WorkerStatusChanged); // <-- CORREGIDO: Faltaba este punto y coma
+
+        // 3. Agrupamos ambas suscripciones
+        iced::Subscription::batch(vec![eventos_ventana, worker_sub])
     }
     
 }
@@ -295,6 +365,10 @@ fn main() -> iced::Result {
     })
     // Al añadir ": &CifarExperimenter", Rust entiende perfectamente los tiempos de vida
     .theme(|_state: &CifarExperimenter| Theme::Dark)
+    .window(iced::window::Settings {
+        exit_on_close_request: false, // <-- IMPORTANTE: Desactiva la guillotina automática
+        ..Default::default()
+    })
     .subscription(CifarExperimenter::subscription)
     .run()
 }

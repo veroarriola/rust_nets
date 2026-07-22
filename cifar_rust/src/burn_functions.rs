@@ -1,10 +1,9 @@
 use burn::tensor::backend::Backend; // Para poder usar B::seed()
-use burn::record::CompactRecorder;
+use burn::record::{CompactRecorder, Recorder};
 use burn::backend::{Wgpu, wgpu::WgpuDevice, Autodiff};
 use burn::data::dataloader::DataLoaderBuilder;
 use burn::nn::loss::CrossEntropyLossConfig;
 use burn::optim::{AdamConfig, Optimizer};
-use burn::record::Recorder;
 use burn::prelude::Module;
 
 use std::fs;
@@ -22,13 +21,6 @@ const NUM_CLASSES: usize = 10;        // Para la matriz de confusión
 // Definimos el Backend con Autodiff para entrenamiento en GPU
 type MyBackend = Autodiff<Wgpu>;
 
-#[derive(Debug, Clone)]
-pub struct WorkerConfig {
-    pub seed: u64,
-    pub lr: f32,
-    pub target_epochs: usize,
-    pub validation_interval: usize,
-}
 
 pub fn worker_loop(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<ToWorker>,
@@ -118,6 +110,16 @@ pub fn worker_loop(
 
                     let _ = tx.send(FromWorker::CheckpointLoaded(meta));
                 }
+                ToWorker::Exit => {
+                    println!("Vaciando buffers de Rerun...");
+                    // Esto fuerza a Rerun a enviar cualquier tensor pendiente por la red
+                    // antes de destruir la conexión.
+                    let _ = rec.flush_blocking(); 
+
+                    // Le avisamos a la UI que ya terminamos de limpiar
+                    let _ = tx.send(FromWorker::WorkerExited);
+                    break;
+                }
             }
         }
 
@@ -131,28 +133,56 @@ pub fn worker_loop(
                 rec.set_time_sequence("epoca", current_epoch as i64);
 
                 for batch in dataloader_train.iter() {
+                    // BUCLE 1: Mensajes sobre la marcha
                     while let Ok(cmd) = rx.try_recv() {
                         match cmd {
                             ToWorker::Pause => is_training = false,
                             ToWorker::Stop => {
                                 is_training = false;
-                                model = None; // ¡Ahora Rust sí te deja hacer esto!
+                                model = None;
                                 optimizador = None;
                                 current_epoch = 0;
                                 let _ = tx.send(FromWorker::Finished);
                                 break; 
                             }
-                            ToWorker::Start(config) => current_lr = config.lr,
-                            _ => {}
+                            ToWorker::Start(config) => {
+                                is_training = true;
+                                current_lr = config.lr;
+                                current_seed = config.seed;           // ¡Faltaba esto!
+                                target_epochs = config.target_epochs; // ¡Faltaba esto!
+                            }
+                            ToWorker::LoadCheckpoint(path) => {
+                                let meta_str = fs::read_to_string(format!("{}/meta.json", path)).unwrap();
+                                let meta: TrainingMeta = serde_json::from_str(&meta_str).unwrap();
+                                current_epoch = meta.epoch;
+                                current_seed = meta.seed;
+                                current_lr = meta.lr;
+                                MyBackend::seed(&device, current_seed);
+                                let record = CompactRecorder::new().load(format!("{}/model", path).into(), &device).unwrap();
+                                model = Some(Model::<MyBackend>::new(&device).load_record(record));
+                                optimizador = Some(AdamConfig::new().init());
+                                let _ = tx.send(FromWorker::CheckpointLoaded(meta));
+                                
+                                is_training = false; 
+                                break; // Abortamos el lote actual para iniciar limpios
+                            }
+                            ToWorker::Exit => {
+                                let _ = rec.flush_blocking();
+                                let _ = tx.send(FromWorker::WorkerExited);
+                                return;
+                            }
                         }
                     }
 
+                    // BUCLE 2: Espera bloqueante cuando está pausado
                     while !is_training && model.is_some() {
                         if let Some(cmd) = rx.blocking_recv() {
                             match cmd {
                                 ToWorker::Start(config) => {
                                     is_training = true;
                                     current_lr = config.lr;
+                                    current_seed = config.seed;           // ¡Faltaba esto!
+                                    target_epochs = config.target_epochs; // ¡Faltaba esto!
                                 }
                                 ToWorker::Stop => {
                                     is_training = false;
@@ -160,6 +190,27 @@ pub fn worker_loop(
                                     optimizador = None;
                                     let _ = tx.send(FromWorker::Finished);
                                     break;
+                                }
+                                ToWorker::LoadCheckpoint(path) => {
+                                    // Misma lógica de recarga
+                                    let meta_str = fs::read_to_string(format!("{}/meta.json", path)).unwrap();
+                                    let meta: TrainingMeta = serde_json::from_str(&meta_str).unwrap();
+                                    current_epoch = meta.epoch;
+                                    current_seed = meta.seed;
+                                    current_lr = meta.lr;
+                                    MyBackend::seed(&device, current_seed);
+                                    let record = CompactRecorder::new().load(format!("{}/model", path).into(), &device).unwrap();
+                                    model = Some(Model::<MyBackend>::new(&device).load_record(record));
+                                    optimizador = Some(AdamConfig::new().init());
+                                    let _ = tx.send(FromWorker::CheckpointLoaded(meta));
+                                    
+                                    is_training = false;
+                                    break; 
+                                }
+                                ToWorker::Exit => {
+                                    let _ = rec.flush_blocking();
+                                    let _ = tx.send(FromWorker::WorkerExited);
+                                    return;
                                 }
                                 _ => {}
                             }
@@ -184,7 +235,7 @@ pub fn worker_loop(
                     *m = opt.step(current_lr as f64, m.clone(), grads_params);
                 } // ¡Aquí termina el alcance de 'm' y 'opt', devolviendo el control!
 
-                if model.is_some() {
+                if model.is_some() && n_batches > 0 {
                     let train_loss_media = loss_total / n_batches as f32;
                     let _ = rec.log("metricas/loss_train", &rerun::Scalars::new([train_loss_media as f64]));
 
@@ -223,7 +274,7 @@ pub fn worker_loop(
                         let _ = rec.log("metricas/loss_val", &rerun::Scalars::new([val_loss_media as f64]));
 
                         let shape = vec![NUM_CLASSES as u64, NUM_CLASSES as u64];
-                        rec.log(
+                        let _ = rec.log(
                             "evaluacion/matriz_confusion",
                             &rerun::Tensor::new(rerun::TensorData::new(
                                 shape,
@@ -234,7 +285,8 @@ pub fn worker_loop(
 
                     // --- GUARDADO DE CHECKPOINT CONDICIONADO ---
                     if current_epoch % CHECKPOINT_INTERVAL == 0 {
-                        let dir_path = format!("checkpoints/epoch_{}", current_epoch);
+                        // Incluimos semilla y learning rate en el nombre de la carpeta
+                        let dir_path = format!("checkpoints/seed_{}_lr_{}_epoch_{}", current_seed, current_lr, current_epoch);
                         fs::create_dir_all(&dir_path).expect("Fallo al crear directorio de checkpoint");
 
                         let recorder = CompactRecorder::new();

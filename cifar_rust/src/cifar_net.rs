@@ -185,15 +185,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-
-            // Registramos la matriz pasándole la forma [10, 10]
-            rec.log(
-                "metricas/matriz_confusion",
-                &rerun::Tensor::new(rerun::TensorData::new(
-                    vec![10_u64, 10_u64],
-                    rerun::TensorBuffer::F32(confusion_matrix.into())
-                ))
-            )?;
         }
     }
 
