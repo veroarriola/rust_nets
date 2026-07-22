@@ -1,206 +1,300 @@
-use burn::backend::{Wgpu, wgpu::WgpuDevice, Autodiff};
-use burn::data::dataloader::DataLoaderBuilder;
+use iced::{Task, Element, Theme, Length, Subscription};
+use iced::widget::{button, column, row, text, text_input, container, Space};
+use iced::color;
+use iced::futures::SinkExt; // Necesario para hacer output.send(...).await
+//use tokio::sync::mpsc; // Usaremos canales asíncronos para Iced <-> Worker
+
+mod training_state;
+mod cifar_data;
+mod cifar_net;
+mod burn_functions; 
+
+use training_state::{WorkerEvent, ToWorker, TrainingStatus, FromWorker};
+use burn_functions::{WorkerConfig, worker_loop};
 
 
-use burn::module::Module;
-use burn::nn::{Linear, LinearConfig, Relu};
-use burn::nn::loss::CrossEntropyLossConfig;
-use burn::optim::{AdamConfig, Optimizer};
-use burn::tensor::{backend::Backend, Tensor};
-
-// Datos
-use cifar_rust::{load_cifar_folder, CifarBatcher};
-
-use indicatif::ProgressBar;
+// --- EVENTOS DEL SUBSCRIPTOR ---
 
 
-// -.- Red densa .-.
-
-#[derive(Module, Debug)]
-pub struct Model<B: Backend> {
-    linear_1: Linear<B>,
-    linear_2: Linear<B>,
-    linear_3: Linear<B>,
-    relu: Relu,
-}
-
-impl<B: Backend> Model<B> {
-    pub fn new(device: &B::Device) -> Self {
-        // CIFAR-10: 32x32x3 = 3072 entradas. 10 clases de salida.
-        let linear_1 = LinearConfig::new(3072, 1024).init(device);
-        // Oculta: 1024 -> 512 (clases de CIFAR)
-        let linear_2 = LinearConfig::new(1024, 512).init(device);
-        // Oculta: 512 -> Salida: 10 (clases de CIFAR)
-        let linear_3 = LinearConfig::new(512, 10).init(device);
-
-        Self {
-            linear_1,
-            linear_2,
-            linear_3,
-            relu: Relu::new(),
-        }
-    }
-
-    pub fn forward(&self, input: Tensor<B, 2>) -> Tensor<B, 2> {
-        // Capa 1 -> Activación Relu
-        let x = self.linear_1.forward(input);
-        let x = self.relu.forward(x);
-        let x = self.linear_2.forward(x);
-        let x = self.relu.forward(x);
-
-        // Salida (logits)
-        self.linear_3.forward(x)
-    }
+#[derive(Debug, Clone)]
+pub enum UiMessage {
+    InputSeedChanged(String),
+    InputLrChanged(String),
+    InputEpochsChanged(String),
+    BtnStartPressed,
+    BtnPausePressed,
+    BtnStopPressed,
+    BtnLoadPressed(String),
+    WorkerStatusChanged(WorkerEvent),
 }
 
 
+// IU
 
-// -.- Entrenamiento .-.
+pub struct CifarExperimenter {
+    status: TrainingStatus,
+    input_seed: String,
+    input_lr: String,
+    input_epochs: String,
+    current_epoch: usize,
+    current_loss: f32,
+    checkpoints_disponibles: Vec<String>,
+    
+    // El transmisor para enviarle comandos (Pausa, Iniciar) al hilo de Burn
+    //worker_tx: Option<mpsc::UnboundedSender<ToWorker>>,
+    worker_tx: Option<tokio::sync::mpsc::UnboundedSender<ToWorker>>,
+}
 
-// Definimos el Backend con Autodiff para entrenamiento en GPU
-type MyBackend = Autodiff<Wgpu>;
+impl CifarExperimenter {
+    // Constructor
+    pub fn new() -> (Self, Task<UiMessage>) {
+        (
+            Self {
+                status: TrainingStatus::Idle,
+                input_seed: "42".to_string(),
+                input_lr: "0.001".to_string(),
+                input_epochs: "10".to_string(),
+                current_epoch: 0,
+                current_loss: 0.0,
+                checkpoints_disponibles: vec![],
+                worker_tx: None, // Se conectará al iniciar
+            },
+            Task::none(),
+        )
+    }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // a. Inicializar Rerun
-    let rec = rerun::RecordingStreamBuilder::new("cifar10_mlp_manual").spawn()?;
+    pub fn update(&mut self, message: UiMessage) -> Task<UiMessage> {
+        match message {
+            UiMessage::InputSeedChanged(val) => {
+                self.input_seed = val;
+                Task::none()
+            }
 
-    // b. Configurar Dispositivo (GPU por defecto en Wgpu)
-    let device = WgpuDevice::default();
-    println!("Entrenando en: {:?}", device);
+            UiMessage::InputLrChanged(val) => {
+                self.input_lr = val;
+                Task::none()
+            }
 
-    // Cargas el dataset de entrenamiento y test
-    let dataset_train = load_cifar_folder("cifar10_images/train");
-    let dataset_test = load_cifar_folder("cifar10_images/test");
+            UiMessage::InputEpochsChanged(val) => {
+                self.input_epochs = val;
+                Task::none()
+            }
+            
+            UiMessage::BtnStartPressed => {
+                self.status = TrainingStatus::Training;
+                
+                // Parseamos los parámetros
+                let seed = self.input_seed.parse::<u64>().unwrap_or(42);
+                let lr = self.input_lr.parse::<f32>().unwrap_or(0.001);
+                let epochs = self.input_epochs.parse::<usize>().unwrap_or(10);
 
-    // c. Preparar Datos
+                if let Some(tx) = &self.worker_tx {
+                    // 1. Instanciamos el struct con los datos recogidos de la UI
+                    let config = WorkerConfig {
+                        seed,
+                        lr,
+                        target_epochs: epochs,
+                        validation_interval: 2, // Aquí asignas tu intervalo de validación
+                    };
 
-    let batch_size = 64;
+                    // 2. Lo pasamos como parámetro a la variante Start
+                    let _ = tx.send(ToWorker::Start(config));
+                } else {
+                    // El worker se inicializa en el 'subscription' de Iced al abrir la app.
+                    // Si llegamos aquí, el canal aún no está listo.
+                    println!("Advertencia: Se presionó Start pero el Worker no está conectado aún.");
+                }
+                Task::none()
+            }
+            
+            UiMessage::BtnPausePressed => {
+                self.status = TrainingStatus::Paused;
+                if let Some(tx) = &self.worker_tx {
+                    let _ = tx.send(ToWorker::Pause);
+                }
+                Task::none()
+            }
+            
+            UiMessage::BtnStopPressed => {
+                self.status = TrainingStatus::Idle;
+                if let Some(tx) = &self.worker_tx {
+                    let _ = tx.send(ToWorker::Stop);
+                }
+                Task::none()
+            }
+            
+            UiMessage::BtnLoadPressed(path) => {
+                // Pasamos la ruta exacta al worker para que cargue los tensores desde el disco
+                if let Some(tx) = &self.worker_tx {
+                    let _ = tx.send(ToWorker::LoadCheckpoint(path));
+                }
+                Task::none()
+            }
 
-    let dataloader_train = DataLoaderBuilder::new(CifarBatcher { })
-        .batch_size(batch_size)
-        .shuffle(42)
-        .build(dataset_train);
-
-    let dataloader_test = DataLoaderBuilder::new(CifarBatcher { })
-        .batch_size(batch_size)
-        .build(dataset_test);
-
-
-
-    // d. Inicializar Modelo y Optimizador
-    let mut model = Model::<MyBackend>::new(&device);
-    let mut optimizador = AdamConfig::new().init();
-    let criterion = CrossEntropyLossConfig::new().init(&device);
-
-    // e. Bucle de Entrenamiento
-    let num_epochs = 20;
-    let visualizar_cada_n_epochs = 4; // Frecuencia para pesos y matriz de confusión
-
-    println!("Iniciando entrenamiento manual...");
-
-    for epoch in 1..=num_epochs {
-        rec.set_time_sequence("epoca", epoch as i64);
-
-        let mut loss_total = 0.0;
-        let mut n_batches = 0;
-
-        let pb = ProgressBar::new(dataloader_train.num_items() as u64 / batch_size as u64);
-        pb.set_message(format!("Época {}", epoch));
-
-        for batch in dataloader_train.iter() {
-            // --- PASO DE ENTRENAMIENTO MANUAL ---
-
-            // 1. Forward pass
-            let logits = model.forward(batch.images);
-
-            // 2. Calcular Pérdida (Cross Entropy)
-            // burn::tensor::activation::softmax_cross_entropy_with_logits requiere targets como índices
-            let loss = criterion.forward(logits, batch.targets);
-
-            loss_total += loss.clone().into_data().to_vec::<f32>().unwrap()[0]; // Extraer escalar para estadística
-            n_batches += 1;
-
-            // 3. Backward pass (Calcular Gradientes)
-            let grads = loss.backward();
-
-            // Mapear los gradientes al modelo
-            let grads = burn::optim::GradientsParams::from_grads(grads, &model);
-
-            // 4. Actualizar parámetros del optimizador
-            model = optimizador.step(1e-3, model, grads);
-
-            pb.inc(1);
-        }
-        pb.finish_with_message(format!("Época {} completada", epoch));
-
-        // --- VISUALIZACIÓN 1: Pérdida media de la época ---
-        let loss_media = loss_total / n_batches as f32;
-        rec.log("metricas/loss", &rerun::Scalars::new([loss_media as f64]))?;
-        println!("Época {}: Loss Media = {:.4}", epoch, loss_media);
-
-
-        // --- Visualizaciones pesadas (cada N épocas) ---
-        if epoch % visualizar_cada_n_epochs == 0 || epoch == 1 {
-            println!("==> Extrayendo datos para Rerun...");
-
-            // --- VISUALIZACIÓN 2: Pesos como Imágenes ---
-            // Extraemos los pesos de la capa 1 (shape: [1024, 3072])
-            // Usamos inner() para obtener el backend Wgpu puro sin autodiff
-            let pesos_tensor = model.linear_1.weight.val().inner();
-            let data_pesos = pesos_tensor.into_data().to_vec::<f32>().unwrap();
-
-            // Interpretamos la matriz de [1024, 3072] como una imagen.
-            // Rerun es inteligente: si le das [H, W] f32, muestra un mapa de calor.
-            rec.log(
-                "visualizacion/pesos_capa1_heatmap",
-                &rerun::Tensor::new(rerun::TensorData::new(
-                    vec![1024_u64, 3072_u64],
-                    rerun::TensorBuffer::F32(data_pesos.into())
-                ))
-            )?;
-
-            // --- VISUALIZACIÓN 3: Matriz de Confusión (Requiere validación) ---
-
-            // Usamos un simple Vec plano de 100 elementos (10x10) inicializado en 0
-            let mut confusion_matrix = vec![0.0_f32; 100];
-
-            // Modo evaluación (importante si usaras Dropout o BatchNorm, aunque aquí no hay)
-            // En Burn manual, simplemente no calculamos gradientes.
-
-            for batch in dataloader_test.iter() {
-                let logits = model.forward(batch.images);
-
-                // Obtener predicciones (índice con valor máximo)
-                let predictions = logits.argmax(1).squeeze::<1>(); // [batch_size]
-
-                // Mover predicciones y targets a CPU para contar
-                let preds_cpu = predictions.into_data().to_vec::<i32>().unwrap();
-                let targets_cpu = batch.targets.into_data().to_vec::<i32>().unwrap();
-
-                // Llenar matriz
-                for i in 0..preds_cpu.len() {
-                    let pred = preds_cpu[i] as usize;
-                    let target = targets_cpu[i] as usize;
-
-                    if pred < 10 && target < 10 {
-                        // Mapeamos las coordenadas 2D (target, pred) al índice 1D
-                        let index = target * 10 + pred;
-                        confusion_matrix[index] += 1.0;
+            UiMessage::WorkerStatusChanged(worker_event) => {
+                match worker_event {
+                    // 1. El worker apenas nació y nos da su canal de comunicación
+                    WorkerEvent::Ready(tx) => {
+                        self.worker_tx = Some(tx);
+                        Task::none()
+                    }
+                    
+                    // 2. El worker nos envía una actualización durante su ciclo de vida
+                    WorkerEvent::Update(from_worker_msg) => {
+                        match from_worker_msg {
+                            FromWorker::EpochDone { epoch, loss } => {
+                                self.current_epoch = epoch;
+                                self.current_loss = loss;
+                            }
+                            FromWorker::CheckpointSaved { path, .. } => {
+                                self.checkpoints_disponibles.push(path);
+                            }
+                            FromWorker::CheckpointLoaded(meta) => {
+                                // Sincronizamos la UI con los datos del JSON
+                                self.current_epoch = meta.epoch;
+                                self.input_seed = meta.seed.to_string();
+                                self.input_lr = meta.lr.to_string();
+                                
+                                // Lo ponemos en pausa para que el usuario decida cuándo seguir
+                                self.status = TrainingStatus::Paused;
+                            }
+                            FromWorker::Finished => {
+                                self.status = TrainingStatus::Idle;
+                            }
+                            FromWorker::Error(e) => {
+                                println!("Error en worker: {}", e);
+                                self.status = TrainingStatus::Idle;
+                            }
+                        }
+                        Task::none()
                     }
                 }
             }
-
-            // Registramos la matriz pasándole la forma [10, 10]
-            rec.log(
-                "metricas/matriz_confusion",
-                &rerun::Tensor::new(rerun::TensorData::new(
-                    vec![10_u64, 10_u64],
-                    rerun::TensorBuffer::F32(confusion_matrix.into())
-                ))
-            )?;
         }
     }
 
-    println!("Entrenamiento finalizado.");
-    Ok(())
+    pub fn view(&self) -> Element<'_, UiMessage> {
+        // --- PANEL IZQUIERDO ---
+        let controles = column![
+            text("Parámetros de Entrenamiento").size(20),
+            text("Semilla (Seed):"),
+            text_input("Ej: 42", &self.input_seed).on_input(UiMessage::InputSeedChanged),
+            text("Tasa de Aprendizaje (LR):"),
+            text_input("Ej: 0.001", &self.input_lr).on_input(UiMessage::InputLrChanged),
+            text("Épocas de la serie:"),
+            text_input("Ej: 10", &self.input_epochs).on_input(UiMessage::InputEpochsChanged),
+        ].spacing(10).padding(20);
+
+        let botones = match self.status {
+            TrainingStatus::Idle => {
+                let btn_iniciar = button("Iniciar Serie");
+                // Solo activamos el botón si el canal de comunicación está listo
+                let btn_iniciar = if self.worker_tx.is_some() {
+                    btn_iniciar.on_press(UiMessage::BtnStartPressed)
+                } else {
+                    btn_iniciar
+                };
+                row![btn_iniciar]
+            }
+            
+            TrainingStatus::Training => row![
+                button("Pausar").on_press(UiMessage::BtnPausePressed),
+                button("Detener").on_press(UiMessage::BtnStopPressed)
+            ],
+            
+            TrainingStatus::Paused => {
+                let btn_reanudar = button("Reanudar");
+                // También protegemos la reanudación por si el canal se perdiera
+                let btn_reanudar = if self.worker_tx.is_some() {
+                    btn_reanudar.on_press(UiMessage::BtnStartPressed)
+                } else {
+                    btn_reanudar
+                };
+                
+                row![
+                    btn_reanudar,
+                    button("Detener").on_press(UiMessage::BtnStopPressed)
+                ]
+            }
+        }
+        .spacing(15)
+        .padding(20);
+
+        let panel_izquierdo = column![controles, botones].width(Length::Fixed(300.0));
+
+        // --- PANEL PRINCIPAL ---
+        let panel_principal = column![
+            text("Estado de la Red").size(24),
+            text(format!("Época actual: {}", self.current_epoch)).size(40),
+            text(format!("Loss (Pérdida): {:.4}", self.current_loss)).size(40),
+            text("Checkpoints Guardados:").size(20),
+        ].spacing(20).padding(40).width(Length::Fill);
+
+        // --- LAYOUT FINAL CON ESTILO MODERNO (Iced 0.14) ---
+        let layout = row![
+            panel_izquierdo,
+            // Divisor usando el nuevo sistema de closures para estilos
+            container(Space::new().width(Length::Fixed(2.0)).height(Length::Fill))
+                .style(|_theme: &Theme| {
+                    container::Style::default().background(color!(0x333333))
+                }),
+            panel_principal
+        ];
+
+        container(layout)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            // Fondo general tipo Rerun (Oscuro)
+            .style(|_theme: &Theme| {
+                container::Style::default().background(color!(0x1A1A1A))
+            })
+            .into()
+    }
+
+    // Aquí es donde Iced escucha al Worker permanentemente
+    pub fn subscription(&self) -> Subscription<UiMessage> {
+        iced::Subscription::run(
+            // Añadimos "||" para convertir esto en una función constructora
+            || iced::stream::channel(
+                100, // Buffer de mensajes
+                |mut output: iced::futures::channel::mpsc::Sender<WorkerEvent>| async move {
+                    // Creamos dos canales: Uno para mandar comandos al Worker, otro para recibir sus resultados
+                    let (tx_to_worker, rx_to_worker) = tokio::sync::mpsc::unbounded_channel();
+                    let (tx_from_worker, mut rx_from_worker) = tokio::sync::mpsc::unbounded_channel();
+
+                    // Desacoplamos el entrenamiento en un hilo puro del sistema operativo
+                    std::thread::spawn(move || {
+                        worker_loop(rx_to_worker, tx_from_worker);
+                    });
+
+                    // 1. Enviamos el "control remoto" a la UI para que guarde el transmisor
+                    let _ = output.send(WorkerEvent::Ready(tx_to_worker)).await;
+
+                    // 2. Nos quedamos en un bucle infinito escuchando las métricas de Burn
+                    while let Some(msg) = rx_from_worker.recv().await {
+                        let _ = output.send(WorkerEvent::Update(msg)).await;
+                    }
+
+                    unreachable!() // Este canal nunca debería morir mientras la app viva
+                }
+            )
+        ).map(UiMessage::WorkerStatusChanged)
+    }
+    
+}
+
+fn main() -> iced::Result {
+    iced::application(
+        CifarExperimenter::new,
+        CifarExperimenter::update,
+        CifarExperimenter::view,
+    )
+    // El título ahora es un closure. Definimos el tipo explícitamente.
+    .title(|_state: &CifarExperimenter| {
+        String::from("CIFAR-10 Experimenter - Burn & Rerun")
+    })
+    // Al añadir ": &CifarExperimenter", Rust entiende perfectamente los tiempos de vida
+    .theme(|_state: &CifarExperimenter| Theme::Dark)
+    .subscription(CifarExperimenter::subscription)
+    .run()
 }
