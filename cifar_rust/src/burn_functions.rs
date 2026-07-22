@@ -28,11 +28,16 @@ pub fn worker_loop(
 ) {
     println!("Iniciando Worker de Entrenamiento...");
     
+    // Inicializar Rerun
     let rec = rerun::RecordingStreamBuilder::new("cifar10_mlp_manual")
         .spawn()
         .expect("Fallo al iniciar Rerun");
 
+    // Configurar Dispositivo (GPU por defecto en Wgpu)
     let device = WgpuDevice::default();
+    println!("Entrenando en: {:?}", device);
+
+    // Carga del dataset de entrenamiento y prueba
     let dataset_train = load_cifar_folder("cifar10_images/train");
     let dataset_test = load_cifar_folder("cifar10_images/test");
 
@@ -45,6 +50,7 @@ pub fn worker_loop(
         .batch_size(BATCH_SIZE)
         .build(dataset_test);
 
+    // Inicializar Modelo y Optimizador
     let mut model: Option<Model<MyBackend>> = None;
     //let mut optimizador: Option<burn::optim::OptimizerAdaptor<burn::optim::Adam, Model<MyBackend>, MyBackend>> = None;
     let mut optimizador: Option<_> = None;
@@ -192,16 +198,33 @@ pub fn worker_loop(
                                     break;
                                 }
                                 ToWorker::LoadCheckpoint(path) => {
+                                    println!("Cargando checkpoint determinista desde: {}", path);
+
                                     // Misma lógica de recarga
-                                    let meta_str = fs::read_to_string(format!("{}/meta.json", path)).unwrap();
+                                    let meta_str = fs::read_to_string(format!("{}/meta.json", path))
+                                        .expect("No se encontró meta.json en el checkpoint");
                                     let meta: TrainingMeta = serde_json::from_str(&meta_str).unwrap();
+
                                     current_epoch = meta.epoch;
                                     current_seed = meta.seed;
                                     current_lr = meta.lr;
-                                    MyBackend::seed(&device, current_seed);
-                                    let record = CompactRecorder::new().load(format!("{}/model", path).into(), &device).unwrap();
-                                    model = Some(Model::<MyBackend>::new(&device).load_record(record));
-                                    optimizador = Some(AdamConfig::new().init());
+
+                                    let recorder = CompactRecorder::new();
+
+                                    //MyBackend::seed(&device, current_seed);
+                                    //let record = CompactRecorder::new().load(format!("{}/model", path).into(), &device).unwrap();
+                                    // Cargar Modelo
+                                    let model_record = recorder
+                                        .load(format!("{}/model", path).into(), &device)
+                                        .expect("No se pudieron cargar los pesos del modelo");
+                                    model = Some(Model::<MyBackend>::new(&device).load_record(model_record));
+                                    
+                                    // Cargar Optimizador (Restauramos momentum m, varianza v y contador t)
+                                    let optim_record = recorder
+                                        .load(format!("{}/optim", path).into(), &device)
+                                        .expect("No se pudo cargar el estado del optimizador");
+                                    optimizador = Some(AdamConfig::new().init().load_record(optim_record));
+                                    
                                     let _ = tx.send(FromWorker::CheckpointLoaded(meta));
                                     
                                     is_training = false;
@@ -290,12 +313,22 @@ pub fn worker_loop(
                         fs::create_dir_all(&dir_path).expect("Fallo al crear directorio de checkpoint");
 
                         let recorder = CompactRecorder::new();
+
+                        // 1. Guardamos el Modelo
                         recorder
                             .record(
                                 model.as_ref().unwrap().clone().into_record(),
                                 format!("{}/model", dir_path).into(),
                             )
                             .expect("Fallo al guardar los pesos del modelo");
+
+                        // 2. Guardamos el Optimizador (Adam: momentum m, varianza v y paso t)
+                        recorder
+                            .record(
+                                optimizador.as_ref().unwrap().to_record(),
+                                format!("{}/optim", dir_path).into(),
+                            )
+                            .expect("Fallo al guardar el estado del optimizador");
 
                         let meta = TrainingMeta {
                             epoch: current_epoch,

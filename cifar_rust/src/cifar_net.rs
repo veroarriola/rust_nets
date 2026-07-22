@@ -3,9 +3,6 @@ use burn::module::Module;
 use burn::nn::{Linear, LinearConfig, Relu};
 use burn::tensor::{backend::Backend, Tensor};
 
-// Datos
-//use crate::cifar_data::{load_cifar_folder, CifarBatcher};
-
 //use indicatif::ProgressBar;
 
 
@@ -55,22 +52,6 @@ impl<B: Backend> Model<B> {
 
 /*
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // a. Inicializar Rerun
-    let rec = rerun::RecordingStreamBuilder::new("cifar10_mlp_manual").spawn()?;
-
-
-    // b. Configurar Dispositivo (GPU por defecto en Wgpu)
-    let device = WgpuDevice::default();
-    println!("Entrenando en: {:?}", device);
-
-
-    // Cargas el dataset de entrenamiento y test
-    let dataset_train = load_cifar_folder("cifar10_images/train");
-    let dataset_test = load_cifar_folder("cifar10_images/test");
-
-
-    // c. Preparar Datos
-    let batch_size = 64;
 
     let dataloader_train = DataLoaderBuilder::new(CifarBatcher { })
         .batch_size(batch_size)
