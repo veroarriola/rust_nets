@@ -5,6 +5,14 @@ use std::fs;
 
 // -.- Datos
 
+// --- CONSTANTES DE ENTRENAMIENTO ---
+pub const BATCH_SIZE: usize = 64;
+pub const VALIDATION_INTERVAL: usize = 2; // Extraer métricas de Rerun cada 2 épocas
+pub const CHECKPOINT_INTERVAL: usize = 5; // Guardar a disco cada 5 épocas
+pub const NUM_CLASSES: usize = 10;        // Para la matriz de confusión
+pub const TRAIN_DATASET_PATH: &str = "cifar10_images/train";
+pub const TEST_DATASET_PATH: &str = "cifar10_images/test";
+
 // 1. Definimos cómo se ve un elemento de nuestro dataset
 #[derive(Clone, Debug)]
 pub struct CifarItem {

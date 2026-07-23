@@ -28,6 +28,12 @@ pub enum FromWorker {
     Error(String),
     CheckpointLoaded(TrainingMeta),
     WorkerExited,
+    // Para enviar el progreso de la época actual
+    BatchProgress { 
+        epoch: usize, 
+        current_batch: usize, 
+        total_batches: usize 
+    },
 }
 
 // El esquema de nuestro meta.json

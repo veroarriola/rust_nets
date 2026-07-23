@@ -1,5 +1,5 @@
 use iced::{Task, Element, Theme, Length};
-use iced::widget::{button, column, row, text, text_input, container, Space};
+use iced::widget::{button, column, row, text, text_input, container, Space, progress_bar};
 use iced::color;
 use iced::futures::SinkExt; // Necesario para hacer output.send(...).await
 //use tokio::sync::mpsc; // Usaremos canales asíncronos para Iced <-> Worker
@@ -41,6 +41,8 @@ pub struct CifarExperimenter {
     input_epochs: String,
     current_epoch: usize,
     current_loss: f32,
+    current_batch: usize,
+    total_batches: usize,
     checkpoints_disponibles: Vec<String>,
     
     // El transmisor para enviarle comandos (Pausa, Iniciar) al hilo de Burn
@@ -58,6 +60,8 @@ impl CifarExperimenter {
                 input_epochs: "10".to_string(),
                 current_epoch: 0,
                 current_loss: 0.0,
+                current_batch: 0,
+                total_batches: 0,
                 checkpoints_disponibles: vec![],
                 worker_tx: None, // Se conectará al iniciar
             },
@@ -172,9 +176,16 @@ impl CifarExperimenter {
                     // 2. El worker nos envía una actualización durante su ciclo de vida
                     WorkerEvent::Update(from_worker_msg) => {
                         match from_worker_msg {
+                            FromWorker::BatchProgress { epoch, current_batch, total_batches } => {
+                                self.current_epoch = epoch;
+                                self.current_batch = current_batch;
+                                self.total_batches = total_batches;
+                            }
                             FromWorker::EpochDone { epoch, loss } => {
                                 self.current_epoch = epoch;
                                 self.current_loss = loss;
+                                // Opcional: llenar la barra al 100% cuando termine la época
+                                self.current_batch = self.total_batches; 
                             }
                             FromWorker::CheckpointSaved { path, .. } => {
                                 self.checkpoints_disponibles.push(path);
@@ -281,10 +292,22 @@ impl CifarExperimenter {
         let panel_izquierdo = column![controles, botones].width(Length::Fixed(300.0));
 
         // --- PANEL PRINCIPAL ---
+        // Calculamos el porcentaje del 0.0 al 100.0
+        let porcentaje_progreso = if self.total_batches > 0 {
+            (self.current_batch as f32 / self.total_batches as f32) * 100.0
+        } else {
+            0.0
+        };
+
         let panel_principal = column![
             text("Estado de la Red").size(24),
             text(format!("Época actual: {}", self.current_epoch)).size(40),
             text(format!("Loss (Pérdida): {:.4}", self.current_loss)).size(40),
+            // LA BARRITA DE PROGRESO
+            text(format!("Progreso del Lote (Batch): {} / {}", self.current_batch, self.total_batches)),
+            progress_bar(0.0..=100.0, porcentaje_progreso),
+            
+            Space::new().height(Length::Fixed(20.0)), // Separador visual
             text("Checkpoints Guardados:").size(20),
         ].spacing(20).padding(40).width(Length::Fill);
 
