@@ -1,5 +1,5 @@
 use iced::{Task, Element, Theme, Length};
-use iced::widget::{button, column, row, text, text_input, container, Space, progress_bar};
+use iced::widget::{button, column, row, text, text_input, container, Space, progress_bar, scrollable};
 use iced::color;
 use iced::futures::SinkExt; // Necesario para hacer output.send(...).await
 //use tokio::sync::mpsc; // Usaremos canales asíncronos para Iced <-> Worker
@@ -299,6 +299,21 @@ impl CifarExperimenter {
             0.0
         };
 
+        // Construimos la lista visual de checkpoints
+        let mut lista_checkpoints = column![].spacing(8);
+        
+        if self.checkpoints_disponibles.is_empty() {
+            lista_checkpoints = lista_checkpoints.push(text("Ninguno todavía...").size(16));
+        } else {
+            for path in &self.checkpoints_disponibles {
+                // Agregamos cada ruta como un texto a la columna
+                lista_checkpoints = lista_checkpoints.push(text(path).size(16));
+            }
+        }
+
+        // Envolvemos la lista en un área con scroll
+        let checkpoints_scroll = scrollable(lista_checkpoints).height(Length::Fill);
+
         let panel_principal = column![
             text("Estado de la Red").size(24),
             text(format!("Época actual: {}", self.current_epoch)).size(40),
@@ -309,6 +324,7 @@ impl CifarExperimenter {
             
             Space::new().height(Length::Fixed(20.0)), // Separador visual
             text("Checkpoints Guardados:").size(20),
+            checkpoints_scroll,
         ].spacing(20).padding(40).width(Length::Fill);
 
         // --- LAYOUT FINAL CON ESTILO MODERNO (Iced 0.14) ---
