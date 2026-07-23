@@ -160,8 +160,6 @@ fn rec_confusion_matrix(
     let mut batches = 0;
     let mut confusion_matrix = vec![0u32; NUM_CLASSES * NUM_CLASSES];
 
-    //let m = training_state.model.as_ref().unwrap();
-
     for batch in dataloader.iter() {
         let logits = m.forward(batch.images);
         let loss = training_state.criterion.forward(logits.clone(), batch.targets.clone());
@@ -179,11 +177,11 @@ fn rec_confusion_matrix(
         }
     }
 
-    let loss_path = format!("metricas/loss_{label}");
+    let loss_path = format!("metricas/seed_{}/loss_{label}", training_state.current_seed);
     let val_loss_media = loss_total / batches as f32;
     let _ = rec.log(loss_path, &rerun::Scalars::new([val_loss_media as f64]));
 
-    let matrix_path = format!("evaluacion/matriz_confusion_{label}");
+    let matrix_path = format!("evaluacion/seed_{}/matriz_confusion_{label}", training_state.current_seed);
     let shape = vec![NUM_CLASSES as u64, NUM_CLASSES as u64];
     let _ = rec.log(
         matrix_path,
@@ -415,7 +413,8 @@ pub fn worker_loop(
                 if training_state.model.is_some() && n_batches > 0 {
                     // --- VISUALIZACIÓN 1: Pérdida media de la época ---
                     let train_loss_media = loss_total / n_batches as f32;
-                    let _ = rec.log("metricas/loss_train", &rerun::Scalars::new([train_loss_media as f64]));
+                    let loss_path = format!("metricas/seed_{}/loss_train", training_state.current_seed);
+                    let _ = rec.log(loss_path, &rerun::Scalars::new([train_loss_media as f64]));
                     println!("Época {}: Loss Media = {:.4}", training_state.current_epoch, train_loss_media);
 
                     let _ = tx.send(FromWorker::EpochDone {
@@ -469,9 +468,7 @@ pub fn worker_loop(
                                 .collect();
                             
                             // Aquí mandas "datos" a Rerun construyendo la ruta de forma dinámica:
-                            let ruta_rerun = format!("visualizacion/pesos/pesos_{}_heatmap", nombre_capa);
-                            
-                            // let _ = rec.log(&ruta_rerun, &rerun::Tensor::new(...));
+                            let ruta_rerun = format!("visualizacion/seed_{}/pesos/pesos_{}_heatmap", training_state.current_seed, nombre_capa);
 
                             // Interpretamos la matriz de [1024, 3072] como una imagen.
                             // Rerun es inteligente: si le das [H, W] f32, muestra un mapa de calor.
