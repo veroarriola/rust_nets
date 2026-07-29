@@ -1,0 +1,17 @@
+[package]
+name = "cifar_metaoptim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Stack de OptiRS para optimización y NAS
+optirs-nas = { version = "0.3.1", features = ["bayesian", "reinforcement", "multi_objective"] }
+optirs-core = "0.3.1"
+scirs2-core = "0.6.2"
+
+# Manejo de archivos e imágenes
+image = "0.25.10"
+walkdir = "2.5.0"
+
+# Dependencias típicas para asincronía o paralelismo
+tokio = { version = "1.53", features = ["full"] }
