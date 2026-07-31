@@ -351,9 +351,7 @@ impl CifarExperimenter {
     // Aquí es donde Iced escucha al Worker permanentemente
     pub fn subscription(&self) -> iced::Subscription<UiMessage> {
         // 1. Escuchamos los eventos nativos de la ventana
-        // AÑADIDO: El tercer parámetro `_window_id` que exige Iced 0.14
-        let eventos_ventana = iced::event::listen_with(|event, _status, _window_id| {
-            // CORREGIDO: Eliminamos el `_,` porque Window ahora solo tiene 1 campo
+        let window_events = iced::event::listen_with(|event, _status, _window_id| {
             if let iced::Event::Window(iced::window::Event::CloseRequested) = event {
                 Some(UiMessage::WindowCloseRequested)
             } else {
@@ -384,10 +382,10 @@ impl CifarExperimenter {
                     }
                 }
             )
-        ).map(UiMessage::WorkerStatusChanged); // <-- CORREGIDO: Faltaba este punto y coma
+        ).map(UiMessage::WorkerStatusChanged);
 
         // 3. Agrupamos ambas suscripciones
-        iced::Subscription::batch(vec![eventos_ventana, worker_sub])
+        iced::Subscription::batch(vec![window_events, worker_sub])
     }
     
 }

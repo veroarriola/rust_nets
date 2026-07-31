@@ -1,19 +1,92 @@
 // Red
 use burn::{
-    module::Module,
-    nn::{Linear, LinearConfig},
-    tensor::{backend::Backend, Tensor},
-    tensor::activation::sigmoid,
+    config, module::Module, nn::{Linear, LinearConfig, loss::BinaryCrossEntropyLoss}, tensor::{Tensor, activation::sigmoid, backend::Backend}
 };
 
 // Entrenamiento
 use burn::{
     nn::loss::BinaryCrossEntropyLossConfig,
     tensor::backend::AutodiffBackend,
-    train::{TrainOutput, TrainStep, InferenceStep, RegressionOutput},
+    train::{TrainOutput, TrainStep, InferenceStep, RegressionOutput,},
+    optim::Optimizer,
 };
 
+use burn::backend::{Wgpu, wgpu::WgpuDevice, Autodiff};
+use burn::optim::adaptor::OptimizerAdaptor;
+
+use serde::{Deserialize, Serialize};
+
 use crate::iris_dataset::IrisBatch;
+
+/*
+ * Comunicación entre hilos
+ */
+#[derive(Debug, Clone)]
+pub enum WorkerEvent {
+    // Cuando el hilo arranca, nos entrega el "transmisor" para enviarle comandos
+    Ready(tokio::sync::mpsc::UnboundedSender<ToWorker>),
+    // Actualizaciones de estado desde el worker
+    Update(FromWorker),
+}
+
+#[derive(Debug, Clone)]
+pub enum ToWorker {
+    Start(TrainingConfig),
+    Pause,
+    Stop,
+    LoadCheckpoint(String),
+    Exit,
+}
+
+#[derive(Debug, Clone)]
+pub enum FromWorker {
+    EpochDone { epoch: usize, loss: f32 },
+    CheckpointSaved { path: String, epoch: usize },
+    TrainingFinished,
+    Error(String),
+    CheckpointLoaded(TrainingConfig),
+    WorkerExited,
+    // Para enviar el progreso de la época actual
+    BatchProgress { 
+        epoch: usize, 
+        current_batch: usize, 
+        total_batches: usize 
+    },
+}
+
+#[derive(PartialEq)]
+pub enum TrainingStatus {
+    Idle,
+    Training,
+    Paused,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TrainingConfig {
+    pub seed: u64,
+    pub lr: f32,
+    pub target_epochs: usize,
+    pub validation_interval: usize,
+}
+
+// Definimos el Backend con Autodiff para entrenamiento en GPU
+type MyBackend = Autodiff<Wgpu>;
+pub type MyOptimizer = OptimizerAdaptor<
+    burn::optim::Adam,
+    Perceptron<MyBackend>,   // trait: burn::module::AutodiffModule<AutodiffBackend>
+    MyBackend,               // trait: AutodiffBackend
+>;
+
+pub struct TrainingState {
+    device: WgpuDevice,
+    is_training: bool,
+    pub current_epoch: usize,
+    reset_dataloader: bool, // Para usar la semilla
+    model: Option<Perceptron<MyBackend>>,
+    optimizador: Option<MyOptimizer>,
+    criterion: BinaryCrossEntropyLoss<MyBackend>,
+}
+
 
 
 /*
@@ -83,5 +156,46 @@ impl<B: Backend> InferenceStep for Perceptron<B> {
 
         // En inferencia/validación solo devolvemos las métricas (sin gradientes)
         RegressionOutput::new(loss, predictions, batch.targets)
+    }
+}
+
+
+pub async fn worker_loop(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<ToWorker>,
+    tx: tokio::sync::mpsc::UnboundedSender<FromWorker>,
+) {
+    while let Some(msg) = rx.recv().await {
+        //if let Some(cmd) = msg {
+            //match cmd {
+                //ToWorker::Start(config) => {
+                if let ToWorker::Start(config) = msg {
+                    let device = WgpuDevice::default();
+                    let mut model: Perceptron<MyBackend> = Perceptron::new(&device);
+                    let mut optim = burn::optim::SgdConfig::new()
+                        .init::<MyBackend, Perceptron<MyBackend>>();
+                    
+                    // Bucle manual de épocas
+                    for epoch in 0..config.target_epochs {
+                        // Iteramos sobre los lotes (asumiendo que tienes tu dataloader)
+                        // for batch in train_dataloader.iter() {
+                        //     let output = model.step(batch);
+                        //     model = optim.step(learning_rate, model, output.grads);
+                        // }
+
+                        // --- INTEGRACIÓN CON RERUN E ICED ---
+                        // Aquí tienes acceso directo al modelo en cada época
+                        // Puedes extraer los pesos y el sesgo sin pelear con el Learner:
+                        
+                        // let pesos = model.linear.weight.val().into_data().convert::<f32>().value;
+                        // let sesgo = model.linear.bias.unwrap().val().into_data().convert::<f32>().value;
+                        
+                        // Le envías los datos frescos a tu hilo principal para graficar:
+                        // let _ = tx.send(FromWorker::EpochUpdate { epoch, pesos, sesgo });
+                    }
+                    
+                    let _ = tx.send(FromWorker::TrainingFinished);
+                }
+            //}
+        //}
     }
 }

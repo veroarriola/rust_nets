@@ -6,7 +6,9 @@ use iced::widget::container::Style as ContainerStyle; // Opcional, para el fondo
 
 use rerun::RecordingStream;
 use strum::IntoEnumIterator; 
+
 use crate::iris_dataset::{IrisClass, IrisDataset};
+use crate::burn_perceptron::{FromWorker, Perceptron, ToWorker, TrainingConfig, TrainingStatus, WorkerEvent, worker_loop};
 
 mod iris_dataset;
 mod burn_perceptron;
@@ -14,6 +16,8 @@ mod rerun_plotter;
 
 use iced::{window};
 use iced::window::icon;
+
+use iced::futures::SinkExt; // Necesario para hacer output.send(...).await
 
 
 fn cargar_icono() -> icon::Icon {
@@ -37,7 +41,19 @@ fn cargar_icono() -> icon::Icon {
 #[derive(Debug, Clone)]
 pub enum UiMessage {
     TargetClassSelected(IrisClass),
+    InputSeedChanged(String),
+    InputLrChanged(String),
+    InputEpochsChanged(String),
+    BtnStartPressed,
+    BtnPausePressed,
+    BtnStopPressed,
+    BtnLoadPressed(String),
+    WindowCloseRequested,
+    BtnLoadCheckpointPressed,
+    CheckpointSelected(Option<String>), // Option porque el usuario puede cancelar la ventana
+    WorkerStatusChanged(WorkerEvent),
 }
+
 pub struct PerceptronExperimenter {
     //status: TrainingStatus,
     // Lista de opciones
@@ -51,6 +67,19 @@ pub struct PerceptronExperimenter {
     // Mensaje de error en caso de haberlo
     error_message: Option<String>,
     status_bar_message: Option<String>,
+
+    status: TrainingStatus,
+    input_seed: String,
+    input_lr: String,
+    input_epochs: String,
+    current_epoch: usize,
+    current_loss: f32,
+    current_batch: usize,
+    total_batches: usize,
+    checkpoints_disponibles: Vec<String>,
+
+    // El transmisor para enviarle comandos (Pausa, Iniciar) al hilo de Burn
+    worker_tx: Option<tokio::sync::mpsc::UnboundedSender<ToWorker>>,
 }
 
 impl PerceptronExperimenter {
@@ -63,6 +92,18 @@ impl PerceptronExperimenter {
             rec: None,
             error_message: None,
             status_bar_message: None,
+
+            status: TrainingStatus::Idle,
+            input_seed: "42".to_string(),
+            input_lr: "0.001".to_string(),
+            input_epochs: "10".to_string(),
+            current_epoch: 0,
+            current_loss: 0.0,
+            current_batch: 0,
+            total_batches: 0,
+            checkpoints_disponibles: vec![],
+
+            worker_tx: None, // Se conectará al iniciar
         };
         // Cargar conjunto de datos
         match IrisDataset::new(iris_dataset::DATASET_SOURCE_FILE) {
@@ -97,11 +138,84 @@ impl PerceptronExperimenter {
         
     }
 
-    pub fn update(&mut self, message: UiMessage) {
+    pub fn update(&mut self, message: UiMessage) -> Task<UiMessage> {
         match message {
             UiMessage::TargetClassSelected(iris_class) => {
                 self.target_class = Some(iris_class);
+                iced::Task::none()
             },
+            UiMessage::InputSeedChanged(String) => todo!(),
+            UiMessage::InputLrChanged(String) => todo!(),
+            UiMessage::InputEpochsChanged(String) => todo!(),
+            UiMessage::BtnStartPressed => todo!(),
+            UiMessage::BtnPausePressed => todo!(),
+            UiMessage::BtnStopPressed => todo!(),
+            UiMessage::BtnLoadPressed(String) => todo!(),
+            UiMessage::WindowCloseRequested => todo!(),
+            UiMessage::BtnLoadCheckpointPressed => todo!(),
+            UiMessage::CheckpointSelected(Some(path)) => {
+                if let Some(tx) = &self.worker_tx {
+                    println!("Solicitando al Worker cargar: {}", path);
+                    let _ = tx.send(ToWorker::LoadCheckpoint(path));
+                }
+                iced::Task::none()
+            }
+
+            UiMessage::CheckpointSelected(None) => {
+                // El usuario cerró la ventana sin elegir nada, no hacemos nada.
+                iced::Task::none()
+            }
+
+            UiMessage::WorkerStatusChanged(worker_event) => {
+                match worker_event {
+                    // 1. El worker apenas nació y nos da su canal de comunicación
+                    WorkerEvent::Ready(tx) => {
+                        self.worker_tx = Some(tx);
+                        Task::none()
+                    }
+
+                    WorkerEvent::Update(from_worker_msg) => {
+                        match from_worker_msg {
+                            FromWorker::BatchProgress { epoch, current_batch, total_batches } => {
+                                self.current_epoch = epoch;
+                                self.current_batch = current_batch;
+                                self.total_batches = total_batches;
+                            }
+                            FromWorker::EpochDone { epoch, loss } => {
+                                self.current_epoch = epoch;
+                                self.current_loss = loss;
+                                // Opcional: llenar la barra al 100% cuando termine la época
+                                self.current_batch = self.total_batches; 
+                            }
+                            FromWorker::CheckpointSaved { path, .. } => {
+                                self.checkpoints_disponibles.push(path);
+                            }
+                            FromWorker::CheckpointLoaded(meta) => {
+                                // Sincronizamos la UI con los datos del JSON
+                                self.current_epoch = meta.target_epochs;
+                                self.input_seed = meta.seed.to_string();
+                                self.input_lr = meta.lr.to_string();
+                                
+                                // Lo ponemos en pausa para que el usuario decida cuándo seguir
+                                self.status = TrainingStatus::Paused;
+                                println!("¡Checkpoint cargado con éxito! Época actual: {}", self.current_epoch);
+                            }
+                            FromWorker::TrainingFinished => {
+                                self.status = TrainingStatus::Idle;
+                            }
+                            FromWorker::Error(e) => {
+                                println!("Error en worker: {}", e);
+                                self.status = TrainingStatus::Idle;
+                            }
+                            FromWorker::WorkerExited => {
+                                println!("Worker terminado de forma segura. Apagando...");
+                                std::process::exit(0);
+                            }
+                        }
+                        Task::none()
+                    }
+                }
+            }
         }
     }
 
@@ -146,6 +260,47 @@ impl PerceptronExperimenter {
             })
             .into()
     }
+
+    // Aquí es donde Iced escucha al Worker permanentemente
+    pub fn subscription(&self) -> iced::Subscription<UiMessage> {
+
+        // 1. Escuchamos los eventos nativos de la ventana
+        let window_events = iced::event::listen_with(|event, _status, _window_id| {
+            if let iced::Event::Window(iced::window::Event::CloseRequested) = event {
+                Some(UiMessage::WindowCloseRequested)
+            } else {
+                None
+            }
+        });
+
+        // 2. Suscribir al trabajador
+        let worker_sub = iced::Subscription::run(
+            || iced::stream::channel(
+                100, // Buffer de mensajes
+                |mut output: iced::futures::channel::mpsc::Sender<WorkerEvent>| async move {
+                    // Creamos dos canales
+                    let (tx_to_worker, rx_to_worker) = tokio::sync::mpsc::unbounded_channel();
+                    let (tx_from_worker, mut rx_from_worker) = tokio::sync::mpsc::unbounded_channel();
+
+                    // Desacoplamos el entrenamiento
+                    std::thread::spawn(move || {
+                        worker_loop(rx_to_worker, tx_from_worker);
+                    });
+
+                    // 1. Enviamos el "control remoto" a la UI
+                    let _ = output.send(WorkerEvent::Ready(tx_to_worker)).await;
+
+                    // 2. Bucle infinito escuchando a Burn
+                    while let Some(msg) = rx_from_worker.recv().await {
+                        let _ = output.send(WorkerEvent::Update(msg)).await;
+                    }
+                }
+            )
+        ).map(UiMessage::WorkerStatusChanged);
+
+        // 3. Agrupamos ambas suscripciones
+        iced::Subscription::batch(vec![window_events, worker_sub])
+    }
 }
 
 fn main() -> iced::Result {
@@ -160,7 +315,9 @@ fn main() -> iced::Result {
     .theme(|_state: &PerceptronExperimenter| Theme::Dark)
     .window(window::Settings {
         icon: Some(cargar_icono()),
+        exit_on_close_request: false,
         ..window::Settings::default()
     })
+    .subscription(PerceptronExperimenter::subscription)
     .run()
 }
