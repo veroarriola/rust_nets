@@ -9,7 +9,7 @@ use burn::tensor::{backend::Backend, Tensor, TensorData};
 pub const DATASET_SOURCE_FILE: &str = "data/iris.data";
 
 
-#[derive(Debug, Clone, PartialEq, Eq, EnumIter)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, EnumIter)]
 pub enum IrisClass {
     Setosa,
     Versicolour,
@@ -24,6 +24,16 @@ impl std::fmt::Display for IrisClass {
             Self::Virginica => "Virginica",
         };
         write!(f, "{}", text)
+    }
+}
+
+impl IrisClass {
+    pub fn target_name(&self) -> String {
+        match self {
+            Self::Setosa => String::from("Iris-setosa"),
+            Self::Versicolour => String::from("Iris-versicolour"),
+            Self::Virginica => String::from("Iris-virginica"),
+        }
     }
 }
 

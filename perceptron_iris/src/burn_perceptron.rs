@@ -14,6 +14,8 @@ use burn::{
 use burn::backend::{Wgpu, wgpu::WgpuDevice, Autodiff};
 use burn::optim::adaptor::OptimizerAdaptor;
 
+use rerun::RecordingStream;
+
 use serde::{Deserialize, Serialize};
 
 use crate::iris_dataset::IrisBatch;
@@ -31,7 +33,7 @@ pub enum WorkerEvent {
 
 #[derive(Debug, Clone)]
 pub enum ToWorker {
-    Start(TrainingConfig),
+    Start(TrainingConfig, Option<RecordingStream>),
     Pause,
     Stop,
     LoadCheckpoint(String),
@@ -54,15 +56,9 @@ pub enum FromWorker {
     },
 }
 
-#[derive(PartialEq)]
-pub enum TrainingStatus {
-    Idle,
-    Training,
-    Paused,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TrainingConfig {
+    pub target_class: String,
     pub seed: u64,
     pub lr: f32,
     pub target_epochs: usize,
@@ -159,23 +155,52 @@ impl<B: Backend> InferenceStep for Perceptron<B> {
     }
 }
 
+struct Trainer {
+
+}
+
+impl Trainer {
+    fn new() -> Self {
+        Self {
+
+        }
+    }
+}
 
 pub async fn worker_loop(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<ToWorker>,
     tx: tokio::sync::mpsc::UnboundedSender<FromWorker>,
 ) {
+    println!("Trabajador iniciado");
     while let Some(msg) = rx.recv().await {
+        /*
+        match msg {
+            ToWorker::Start(config) => {
+
+            }
+        }
+        */
         //if let Some(cmd) = msg {
             //match cmd {
                 //ToWorker::Start(config) => {
-                if let ToWorker::Start(config) = msg {
+                
+                // Si rec es None no se graficará el progreso
+                if let ToWorker::Start(config, rec) = msg {
+                    println!("Trabajador iniciando entrenamiento...");
+                    /*
                     let device = WgpuDevice::default();
                     let mut model: Perceptron<MyBackend> = Perceptron::new(&device);
                     let mut optim = burn::optim::SgdConfig::new()
                         .init::<MyBackend, Perceptron<MyBackend>>();
                     
                     // Bucle manual de épocas
-                    for epoch in 0..config.target_epochs {
+                    'epoch_loop: for epoch in 0..config.target_epochs {
+                        // Das un "vistazo rápido" para ver si el usuario pidió detener
+                        if let Ok(ToWorker::Stop) = rx.try_recv() {
+                            println!("Entrenamiento cancelado por el usuario.");
+                            break;
+                            //break 'epoch_loop'; // Rompes el ciclo de entrenamiento
+                        }
                         // Iteramos sobre los lotes (asumiendo que tienes tu dataloader)
                         // for batch in train_dataloader.iter() {
                         //     let output = model.step(batch);
@@ -192,10 +217,19 @@ pub async fn worker_loop(
                         // Le envías los datos frescos a tu hilo principal para graficar:
                         // let _ = tx.send(FromWorker::EpochUpdate { epoch, pesos, sesgo });
                     }
+                    */
                     
+                    println!("Trabajador terminó entrenamiento.");
                     let _ = tx.send(FromWorker::TrainingFinished);
+                }
+                else if let ToWorker::Exit = msg {
+                    println!("Trabajador sin trabajo saliendo.");
+                    let _ = tx.send(FromWorker::WorkerExited);
+                    break;
                 }
             //}
         //}
     }
+    println!("Trabajador terminado.");
+    let _ = tx.send(FromWorker::WorkerExited);
 }

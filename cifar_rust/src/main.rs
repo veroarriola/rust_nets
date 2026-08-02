@@ -117,7 +117,7 @@ impl CifarExperimenter {
             UiMessage::BtnStartPressed => {
                 self.status = TrainingStatus::Training;
                 
-                // Parseamos los parámetros
+                // Recuperamos los parámetros
                 let seed = self.input_seed.parse::<u64>().unwrap_or(42);
                 let lr = self.input_lr.parse::<f32>().unwrap_or(0.001);
                 let epochs = self.input_epochs.parse::<usize>().unwrap_or(10);
