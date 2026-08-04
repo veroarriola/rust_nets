@@ -47,6 +47,7 @@ pub struct IrisBatch<B: Backend> {
     pub targets: Tensor<B, 2>, 
 }
 
+#[derive(Debug, Clone)]
 pub struct IrisDataset {
     pub original_df : DataFrame,
 }

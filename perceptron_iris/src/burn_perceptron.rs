@@ -18,7 +18,10 @@ use rerun::RecordingStream;
 
 use serde::{Deserialize, Serialize};
 
-use crate::iris_dataset::IrisBatch;
+use crate::iris_dataset;
+use crate::iris_dataset::{IrisBatch, IrisClass, IrisDataset};
+use crate::rerun_plotter;
+
 
 /*
  * Comunicación entre hilos
@@ -33,7 +36,7 @@ pub enum WorkerEvent {
 
 #[derive(Debug, Clone)]
 pub enum ToWorker {
-    Start(TrainingConfig, Option<RecordingStream>),
+    Start(TrainingConfig),
     Pause,
     Stop,
     LoadCheckpoint(String),
@@ -73,15 +76,6 @@ pub type MyOptimizer = OptimizerAdaptor<
     MyBackend,               // trait: AutodiffBackend
 >;
 
-pub struct TrainingState {
-    device: WgpuDevice,
-    is_training: bool,
-    pub current_epoch: usize,
-    reset_dataloader: bool, // Para usar la semilla
-    model: Option<Perceptron<MyBackend>>,
-    optimizador: Option<MyOptimizer>,
-    criterion: BinaryCrossEntropyLoss<MyBackend>,
-}
 
 
 
@@ -155,23 +149,120 @@ impl<B: Backend> InferenceStep for Perceptron<B> {
     }
 }
 
-struct Trainer {
+pub struct TrainingState {
+    // Original dataset
+    original_dataset: Option<IrisDataset>,
+    device: WgpuDevice,
+    is_training: bool,
+    pub current_epoch: usize,
+    reset_dataloader: bool, // Para usar la semilla
+    model: Option<Perceptron<MyBackend>>,
+    optimizador: Option<MyOptimizer>,
+    criterion: BinaryCrossEntropyLoss<MyBackend>,
+}
 
+struct Trainer {
+    // Rerun recording stream
+    rec: Option<RecordingStream>,
+    // Conjunto de datos original (sin filtrar)
+    original_dataset: Option<IrisDataset>,
 }
 
 impl Trainer {
-    fn new() -> Self {
+    fn new(rec: Option<RecordingStream>) -> Self {
+        // Dentro de una función async (worker_loop)
         Self {
-
+            rec: rec,
+            original_dataset: None,
         }
     }
+
+    fn load_dataset(&mut self) -> Result<(), String> {
+        // Cargar conjunto de datos
+        match IrisDataset::new(iris_dataset::DATASET_SOURCE_FILE) {
+            Ok(dataset) => {
+                self.original_dataset = Some(dataset);
+                Ok(())
+            },
+            Err(e) => {
+                Err(format!("⚠️ Error al cargar iris.csv: {}", e))
+            },
+        }
+    }
+    /*
+            // Cargar conjunto de datos
+        match IrisDataset::new(iris_dataset::DATASET_SOURCE_FILE) {
+            Ok(dataset) => {
+                match rerun::RecordingStreamBuilder::new("perceptron_iris")
+                    .spawn() {
+                        Ok(rec) => {
+                            // Graficar conjunto de datos inicial en rerun
+                            match rerun_plotter::plot_dataset(&rec, &dataset) {
+                                Ok(_) => {
+                                    
+                                },
+                                Err(e) => {
+                                    obj.status_bar_message = Some(format!("⚠️ Fallo al graficar datos: {}", e));
+                                }
+                            }
+                            obj.original_dataset = Some(dataset);
+                            obj.rec = Some(rec);
+                            (obj, Task::none())
+                        },
+                        Err(e) => {
+                            obj.error_message = Some(format!("⚠️ Fallo al iniciar Rerun: {}", e));
+                            (obj, Task::none())
+                        }
+                    }
+            },
+            Err(e) => {
+                obj.error_message = Some(format!("⚠️ Error al cargar iris.csv: {}", e));
+                (obj, Task::none())
+            },
+        }
+    */
+
+    /*
+    fn flush(&mut self) {
+        
+        if let Some(rec) = self.rec.take() {
+            let _ = rec.flush_blocking();
+        }
+        
+    }
+    */
 }
 
 pub async fn worker_loop(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<ToWorker>,
     tx: tokio::sync::mpsc::UnboundedSender<FromWorker>,
+    mut rec: Option<RecordingStream>,
 ) {
+    // Se ejecuta cuando main se suscribe al trabajador.
     println!("Trabajador iniciado");
+
+    let mut trainer = Trainer::new(rec);
+
+    // Cargar conjunto de datos
+    if let Err(e) = trainer.load_dataset() {
+        let _ = tx.send(FromWorker::Error(e));
+        let _ = tx.send(FromWorker::WorkerExited);
+        return;
+    }
+
+    // Graficar conjunto de datos original
+    match &trainer.rec {
+        Some(rec) => {
+            let Some(dataset) = &trainer.original_dataset.as_ref() else { return };
+            if let Err(e) = rerun_plotter::plot_dataset(&rec, &dataset) {
+                println!("⚠️ Fallo al graficar datos: {}", e);
+            }
+        },
+        None => {
+            println!("⚠️ No se pudo iniciar Rerun. Se continuará sin graficar datos.");
+        }
+    }
+
     while let Some(msg) = rx.recv().await {
         /*
         match msg {
@@ -184,8 +275,11 @@ pub async fn worker_loop(
             //match cmd {
                 //ToWorker::Start(config) => {
                 
+                if let ToWorker::LoadCheckpoint(string) = msg {
+
+                }
                 // Si rec es None no se graficará el progreso
-                if let ToWorker::Start(config, rec) = msg {
+                else if let ToWorker::Start(config) = msg {
                     println!("Trabajador iniciando entrenamiento...");
                     /*
                     let device = WgpuDevice::default();

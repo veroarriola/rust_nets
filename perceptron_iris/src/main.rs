@@ -4,15 +4,14 @@ use iced::color;
 use iced::widget::text::Style as TextStyle; // Opcional, para el lambda
 use iced::widget::container::Style as ContainerStyle; // Opcional, para el fondo
 
-use rerun::RecordingStream;
 use strum::IntoEnumIterator; 
 
 use crate::iris_dataset::{IrisClass, IrisDataset};
-use crate::burn_perceptron::{FromWorker, Perceptron, ToWorker, TrainingConfig, WorkerEvent, worker_loop};
+use crate::burn_perceptron::{FromWorker, ToWorker, TrainingConfig, WorkerEvent, worker_loop};
 
 mod iris_dataset;
-mod burn_perceptron;
 mod rerun_plotter;
+mod burn_perceptron;
 
 use iced::{window};
 use iced::window::icon;
@@ -70,8 +69,6 @@ pub struct PerceptronExperimenter {
     target_class: Option<IrisClass>,
     // Original dataset
     original_dataset: Option<IrisDataset>,
-    // Rerun recording stream
-    rec: Option<RecordingStream>,
     // Mensaje de error en caso de haberlo
     error_message: Option<String>,
     status_bar_message: Option<String>,
@@ -93,57 +90,28 @@ pub struct PerceptronExperimenter {
 impl PerceptronExperimenter {
     pub fn new() -> (Self, Task<UiMessage>) {
         let all_target_classes: Vec<IrisClass> = IrisClass::iter().collect();
-        let mut obj = Self {
-            target_classes: combo_box::State::new(all_target_classes),
-            target_class: Some(IrisClass::Setosa),
-            original_dataset: None,
-            rec: None,
-            error_message: None,
-            status_bar_message: None,
+        (
+            Self {
+                target_classes: combo_box::State::new(all_target_classes),
+                target_class: Some(IrisClass::Setosa),
+                original_dataset: None,
+                error_message: None,
+                status_bar_message: None,
 
-            status: TrainingStatus::Idle,
-            input_seed: "42".to_string(),
-            input_lr: "0.001".to_string(),
-            input_epochs: "10".to_string(),
-            current_epoch: 0,
-            current_loss: 0.0,
-            current_batch: 0,
-            total_batches: 0,
-            checkpoints_disponibles: vec![],
+                status: TrainingStatus::Idle,
+                input_seed: "42".to_string(),
+                input_lr: "0.001".to_string(),
+                input_epochs: "10".to_string(),
+                current_epoch: 0,
+                current_loss: 0.0,
+                current_batch: 0,
+                total_batches: 0,
+                checkpoints_disponibles: vec![],
 
-            worker_tx: None, // Se conectará al iniciar
-        };
-        // Cargar conjunto de datos
-        match IrisDataset::new(iris_dataset::DATASET_SOURCE_FILE) {
-            Ok(dataset) => {
-                match rerun::RecordingStreamBuilder::new("perceptron_iris")
-                    .spawn() {
-                        Ok(rec) => {
-                            // Graficar conjunto de datos inicial en rerun
-                            match rerun_plotter::plot_dataset(&rec, &dataset) {
-                                Ok(_) => {
-                                    
-                                },
-                                Err(e) => {
-                                    obj.status_bar_message = Some(format!("⚠️ Fallo al graficar datos: {}", e));
-                                }
-                            }
-                            obj.original_dataset = Some(dataset);
-                            obj.rec = Some(rec);
-                            (obj, Task::none())
-                        },
-                        Err(e) => {
-                            obj.error_message = Some(format!("⚠️ Fallo al iniciar Rerun: {}", e));
-                            (obj, Task::none())
-                        }
-                    }
+                worker_tx: None, // Se conectará al iniciar
             },
-            Err(e) => {
-                obj.error_message = Some(format!("⚠️ Error al cargar iris.csv: {}", e));
-                (obj, Task::none())
-            },
-        }
-        
+            Task::none()
+        )
     }
 
     pub fn update(&mut self, message: UiMessage) -> Task<UiMessage> {
@@ -216,7 +184,7 @@ impl PerceptronExperimenter {
                     };
 
                     // 2. Lo pasamos como parámetro a la variante Start
-                    let _ = tx.send(ToWorker::Start(config, self.rec.clone()));
+                    let _ = tx.send(ToWorker::Start(config));
                 } else {
                     // El worker se inicializa en el 'subscription' de Iced al abrir la app.
                     // Si llegamos aquí, el canal aún no está listo.
@@ -297,9 +265,11 @@ impl PerceptronExperimenter {
                             }
                             FromWorker::WorkerExited => {
                                 println!("Worker terminado de forma segura. Apagando...");
+                                /*
                                 if let Some(rec) = self.rec.take() {
                                     let _ = rec.flush_blocking();
                                 }
+                                    */
                                 std::process::exit(0);
                             }
                         }
@@ -474,7 +444,10 @@ impl PerceptronExperimenter {
                     // Creamos dos canales
                     let (tx_to_worker, rx_to_worker) = tokio::sync::mpsc::unbounded_channel();
                     let (tx_from_worker, mut rx_from_worker) = tokio::sync::mpsc::unbounded_channel();
-
+                    let rec = rerun::RecordingStreamBuilder::new("perceptron_iris")
+                        .spawn()
+                        .expect("⚠️ Fallo al iniciar ReRun.  Se continuará sin graficar datos.");
+                    
                     // Desacoplamos el entrenamiento
                     std::thread::spawn(move || {
                         // 1. Creamos un motor de Tokio dedicado exclusivamente a este hilo
@@ -484,7 +457,7 @@ impl PerceptronExperimenter {
                             .expect("Fallo al crear el runtime de Tokio para el worker");
 
                         // 2. Bloqueamos el hilo usando el motor para ejecutar nuestra función asíncrona
-                        rt.block_on(worker_loop(rx_to_worker, tx_from_worker));
+                        rt.block_on(worker_loop(rx_to_worker, tx_from_worker, Some(rec)));
                     });
 
                     // 1. Enviamos el "control remoto" a la UI
