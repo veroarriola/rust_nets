@@ -34,6 +34,38 @@ fn generar_triangulos(puntos: &[(f32, f32)], tamano: f32) -> Vec<Vec<(f32, f32)>
     strips
 }
 
+/*
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Inicializar el motor de Rerun
+    let rec = RecordingStreamBuilder::new("grafica_iris")
+        .spawn()?;
+
+    // Tus datos de ejemplo (podrían venir de tu DataFrame de Polars)
+    let puntos_clase_1 = vec![(1.0, 1.0), (2.0, 2.0), (1.5, 1.2)];
+    let puntos_clase_2 = vec![(4.0, 3.0), (3.5, 4.0), (4.2, 3.8)];
+
+    let tamano_marcador = 0.3;
+
+    // 2. Generar la geometría
+    let taches = generar_taches(&puntos_clase_1, tamano_marcador);
+    let triangulos = generar_triangulos(&puntos_clase_2, tamano_marcador);
+
+    // 3. Mandar a graficar a Rerun
+    rec.log(
+        "dataset/setosa",
+        &LineStrips2D::new(taches)
+            .with_colors([Color::from_rgb(255, 50, 50)]), // Rojo
+    )?;
+
+    rec.log(
+        "dataset/versicolor",
+        &LineStrips2D::new(triangulos)
+            .with_colors([Color::from_rgb(50, 255, 50)]), // Verde
+    )?;
+
+    Ok(())
+}
+*/
 
 fn plot_2_characteristics(
     rec: &RecordingStream,

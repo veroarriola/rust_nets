@@ -1,11 +1,18 @@
 use polars::prelude::*;
-use std::error::Error;
+//use std::error::Error;
 
 use strum_macros::EnumIter;
 use serde::{Deserialize, Serialize};
 
-use burn::tensor::{backend::Backend, Tensor, TensorData};
+use burn::tensor::{backend::Backend, Tensor, TensorData, Int};
+use burn::data::{dataloader::batcher::Batcher, dataset::InMemDataset};
 
+use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
+use burn::data::dataloader::DataLoaderBuilder;
+use std::sync::Arc;
+use std::marker::PhantomData;
+
+use burn::data::dataloader::DataLoader;
 
 pub const DATASET_SOURCE_FILE: &str = "data/iris.data";
 
@@ -40,13 +47,128 @@ impl IrisClass {
 
 
 #[derive(Clone, Debug)]
+pub struct IrisItem {
+    pub features: [f32; 4],
+    pub label: i32, // Burn usa enteros de 64 o 32 bits para clases
+}
+
+#[derive(Clone, Debug)]
 pub struct IrisBatch<B: Backend> {
     // Matriz de [tamaño_lote, 4] con las medidas de la flor
     pub inputs: Tensor<B, 2>,
     
-    // Matriz de [tamaño_lote, 1] con valores 1.0 (flor elegida) o 0.0 (las otras dos)
-    pub targets: Tensor<B, 2>, 
+    // Matriz de [tamaño_lote, 1] con valores 1 (flor elegida) o 0 (las otras dos)
+    pub targets: Tensor<B, 1, Int>, 
 }
+
+pub struct IrisBatcher<B: Backend> {
+    _marker: PhantomData<B>,
+}
+
+impl<B: Backend> IrisBatcher<B> {
+    pub fn new() -> Self {
+        Self { _marker: PhantomData }
+    }
+}
+
+// El trait Batcher define cómo convertir un Vec<IrisItem> en un IrisBatch}
+impl<B: Backend> Batcher<B, IrisItem, IrisBatch<B>> for IrisBatcher<B> {
+    fn batch(&self, items: Vec<IrisItem>, device: &B::Device) -> IrisBatch<B> {
+        let batch_size = items.len();
+        
+        let mut features_vec = Vec::with_capacity(batch_size * 4);
+        let mut targets_vec = Vec::with_capacity(batch_size);
+
+        for item in items {
+            features_vec.extend_from_slice(&item.features);
+            targets_vec.push(item.label);
+        }
+
+        let features = Tensor::from_data(TensorData::new(features_vec, [batch_size, 4]), device);
+        //let targets = Tensor::from_data(TensorData::new(targets_vec, [batch_size]), &self.device);
+        let targets = Tensor::<B, 1, burn::tensor::Int>::from_data(
+            TensorData::new(targets_vec, [batch_size]),
+            device,
+        );
+        /*let targets = Tensor::<B, 1, burn::tensor::Int>::from_data(
+            TensorData::new(targets_vec, [batch_size]),
+            device,
+        );*/
+
+        IrisBatch { inputs: features, targets }
+    }
+}
+
+fn build_dataloaders<B: Backend>(
+    df_clean: DataFrame, 
+    device: B::Device, 
+    seed: u64
+) -> PolarsResult<(
+    Arc<dyn DataLoader<B, IrisBatch<B>>>, 
+    Arc<dyn DataLoader<B,IrisBatch<B>>>
+)> {
+    let num_rows = df_clean.height();
+
+    // 1. Extraer columnas (Cast a f32 explícito recomendado para evitar errores)
+    let sl = df_clean.column("sepal_length")?.cast(&DataType::Float32)?.f32()?.clone();
+    let sw = df_clean.column("sepal_width")?.cast(&DataType::Float32)?.f32()?.clone();
+    let pl = df_clean.column("petal_length")?.cast(&DataType::Float32)?.f32()?.clone();
+    let pw = df_clean.column("petal_width")?.cast(&DataType::Float32)?.f32()?.clone();
+    
+    // Nota: Dependiendo de la versión de Polars, puede ser .str() o .utf8()
+    let species = df_clean.column("species")?.str()?.clone();
+
+    // 2. Comprimir en un Vec<IrisItem>
+    let mut items = Vec::with_capacity(num_rows);
+    
+    let it_sl = sl.into_no_null_iter();
+    let it_sw = sw.into_no_null_iter();
+    let it_pl = pl.into_no_null_iter();
+    let it_pw = pw.into_no_null_iter();
+    let it_sp = species.into_no_null_iter();
+
+    for ((((sl_v, sw_v), pl_v), pw_v), sp_v) in it_sl.zip(it_sw).zip(it_pl).zip(it_pw).zip(it_sp) {
+        // Mapeo directo de String a entero para CrossEntropyLoss
+        let label = match sp_v {
+            "Iris-setosa" => 0,
+            "Iris-versicolor" => 1,
+            _ => 2, // Iris-virginica
+        };
+
+        items.push(IrisItem {
+            features: [sl_v, sw_v, pl_v, pw_v],
+            label,
+        });
+    }
+
+    // 3. Barajar los datos usando la semilla proporcionada para reproducibilidad
+    let mut rng = StdRng::seed_from_u64(seed);
+    items.shuffle(&mut rng);
+
+    // 4. Dividir en Entrenamiento (80%) y Validación (20%)
+    let split_idx = (items.len() as f32 * 0.8) as usize;
+    let (train_items, val_items) = items.split_at(split_idx);
+
+    // 5. Convertir a Dataset de Burn
+    let train_dataset = InMemDataset::new(train_items.to_vec());
+    let val_dataset = InMemDataset::new(val_items.to_vec());
+
+    // 6. Construir los DataLoaders
+    let batcher_train = IrisBatcher::<B>::new();
+    let batcher_val = IrisBatcher::<B>::new();
+
+    let train_loader = DataLoaderBuilder::new(batcher_train)
+        .batch_size(16)
+        .shuffle(seed) // Mezclado interno por epoch en el dataloader
+        .build(train_dataset);
+
+    let val_loader = DataLoaderBuilder::new(batcher_val)
+        .batch_size(16)
+        .build(val_dataset); // Validación usualmente no se baraja
+
+    Ok((train_loader, val_loader))
+}
+
 
 #[derive(Debug, Clone)]
 pub struct IrisDataset {
@@ -80,7 +202,7 @@ impl IrisDataset {
 
 
 // ¿Ya no?
-
+/*
 pub fn load_dataset_for_burn<B: Backend>(
     csv_path: &str, 
     target_flower: &str, 
@@ -141,3 +263,4 @@ pub fn load_dataset_for_burn<B: Backend>(
     // Devolvemos el lote empaquetado
     Ok(IrisBatch { inputs, targets })
 }
+    */

@@ -9272,6 +9272,7 @@ dependencies = [
  "iced",
  "image",
  "polars",
+ "rand 0.10.2",
  "rerun",
  "serde",
  "serde_json",

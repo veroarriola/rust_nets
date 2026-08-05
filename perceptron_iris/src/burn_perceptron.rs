@@ -1,14 +1,17 @@
 // Red
 use burn::{
-    config, module::Module, nn::{Linear, LinearConfig, loss::BinaryCrossEntropyLoss}, tensor::{Tensor, activation::sigmoid, backend::Backend}
+    //config,
+    module::Module,
+    nn::{Linear, LinearConfig}, tensor::{Tensor, activation::sigmoid, backend::Backend}
 };
 
 // Entrenamiento
 use burn::{
-    nn::loss::BinaryCrossEntropyLossConfig,
+    //nn::loss::{CrossEntropyLoss, CrossEntropyLossConfig},
+    nn::loss::{BinaryCrossEntropyLoss, BinaryCrossEntropyLossConfig},
     tensor::backend::AutodiffBackend,
-    train::{TrainOutput, TrainStep, InferenceStep, RegressionOutput,},
-    optim::Optimizer,
+    train::{TrainOutput, TrainStep, InferenceStep, ClassificationOutput,},
+    //optim::Optimizer,
 };
 
 use burn::backend::{Wgpu, wgpu::WgpuDevice, Autodiff};
@@ -77,7 +80,8 @@ pub struct TrainingConfig {
 #[derive(Module, Debug)]
 pub struct Perceptron<B: Backend> {
     // La capa lineal maneja los pesos (W) y el sesgo (b)
-    pub linear: Linear<B>, 
+    pub linear: Linear<B>,
+    pub loss_fn: BinaryCrossEntropyLoss<B>,
 }
 
 impl<B: Backend> Perceptron<B> {
@@ -85,7 +89,8 @@ impl<B: Backend> Perceptron<B> {
     pub fn new(device: &B::Device) -> Self {
         // 4 entradas (características de Iris) y 1 salida (clasificación binaria)
         let linear = LinearConfig::new(4, 1).init(device);
-        Self { linear }
+        let loss_fn = BinaryCrossEntropyLossConfig::new().init(device);
+        Self { linear, loss_fn }
     }
 
     /// Pasada hacia adelante (Forward pass)
@@ -103,22 +108,23 @@ impl<B: Backend> Perceptron<B> {
 // AutodiffBackend es crucial aquí porque necesitamos calcular gradientes
 impl<B: AutodiffBackend> TrainStep for Perceptron<B> {
     type Input = IrisBatch<B>;
-    
-    // 1. Ahora el Output es RegressionOutput, el cual sí implementa ItemLazy
-    type Output = RegressionOutput<B>;
+    type Output = ClassificationOutput<B>;
 
     fn step(&self, batch: Self::Input) -> TrainOutput<Self::Output> {
         let predictions = self.forward(batch.inputs);
+        let batch_size = batch.targets.dims()[0];
 
-        let loss = BinaryCrossEntropyLossConfig::new()
-            .init(&predictions.device())
-            // Clonamos predictions y targets si es necesario para usarlos en RegressionOutput
-            .forward(predictions.clone(), batch.targets.clone().int());
+        // Convertimos targets a Float y a 2D: [batch_size, 1] para complacer al Loss
+        let targets_2d = batch.targets.clone().reshape([batch_size, 1]);
+
+        let loss = self.loss_fn
+            // Clonamos predictions y targets si es necesario para usarlos en ClassificationOutput
+            .forward(predictions.clone(), targets_2d);
 
         let grads = loss.backward();
 
-        // 2. Empaquetamos los datos en RegressionOutput
-        let output = RegressionOutput::new(loss, predictions, batch.targets);
+        // 2. Empaquetamos los datos en ClassificationOutput
+        let output = ClassificationOutput::new(loss, predictions, batch.targets);
 
         // 3. TrainOutput recibe el módulo, los gradientes y nuestro 'output' de métricas
         TrainOutput::new(self, grads, output)
@@ -127,33 +133,20 @@ impl<B: AutodiffBackend> TrainStep for Perceptron<B> {
 
 impl<B: Backend> InferenceStep for Perceptron<B> {
     type Input = IrisBatch<B>;
-    type Output = RegressionOutput<B>;
+    type Output = ClassificationOutput<B>;
 
     fn step(&self, batch: Self::Input) -> Self::Output {
         let predictions = self.forward(batch.inputs);
-        
-        let loss = BinaryCrossEntropyLossConfig::new()
-            .init(&predictions.device())
-            .forward(predictions.clone(), batch.targets.clone().int());
+        let batch_size = batch.targets.dims()[0];
+
+        let targets_2d = batch.targets.clone().reshape([batch_size, 1]);
+        let loss = self.loss_fn.forward(predictions.clone(), targets_2d);
 
         // En inferencia/validación solo devolvemos las métricas (sin gradientes)
-        RegressionOutput::new(loss, predictions, batch.targets)
+        ClassificationOutput::new(loss, predictions, batch.targets)
     }
 }
 
-/*
-pub struct TrainingState {
-    // Original dataset
-    original_dataset: Option<IrisDataset>,
-    device: WgpuDevice,
-    is_training: bool,
-    pub current_epoch: usize,
-    reset_dataloader: bool, // Para usar la semilla
-    model: Option<Perceptron<MyBackend>>,
-    optimizador: Option<MyOptimizer>,
-    criterion: BinaryCrossEntropyLoss<MyBackend>,
-}
-*/
 
 const RERUN_TIME_DELTA: f32 = 0.2;  // segundos
 // Definimos el Backend con Autodiff para entrenamiento en GPU
@@ -175,11 +168,10 @@ struct Trainer {
     // Clase objetivo
     target_class: IrisClass,
 
-    //device: MyBackend,
-    //device: Autodiff<burn_fusion::backend::Fusion<CubeBackend<WgpuRuntime, f32, i32, u32>>>,
-    device: WgpuDevice,
     model: Perceptron<MyBackend>,
     optim: MyOptimizer,
+
+    current_epoch: usize,
 }
 
 impl Trainer {
@@ -191,13 +183,16 @@ impl Trainer {
             rerun_time: 0.0,
             original_dataset: None,
             target_class: IrisClass::Setosa, // Valor por defecto igual que el de la IU
-            device: device.clone(),
             model: Perceptron::new(&device),
+            current_epoch: 0,
             //optim: burn::optim::SgdConfig::new()
             //    .init::<MyBackend, Perceptron<MyBackend>>(),
-            optim: burn::optim::AdamConfig::new()
-                .init::<MyBackend, Perceptron<MyBackend>>(),
+            optim: burn::optim::AdamConfig::new().init::<MyBackend, Perceptron<MyBackend>>(),
         }
+    }
+    
+    fn stop(&mut self) {
+        self.current_epoch = 0;
     }
 
     fn load_dataset(&mut self) -> Result<(), String> {
@@ -266,7 +261,7 @@ pub async fn worker_loop(
             println!("Trabajador recibió clase objetivo: {:?}", target_class);
             trainer.set_target_class(target_class);
         }
-        else if let ToWorker::LoadCheckpoint(string) = msg {
+        else if let ToWorker::LoadCheckpoint(_string) = msg {
 
         }
         // Si rec es None no se graficará el progreso
@@ -277,12 +272,15 @@ pub async fn worker_loop(
             println!("Trabajador iniciando entrenamiento...");
             
             // Bucle manual de épocas
-            'epoch_loop: for epoch in 0..config.target_epochs {
+            'epoch_loop: while trainer.current_epoch < config.target_epochs {
                 // Revisamos si el usuario envió mensajes
                 if let Ok(msg) = rx.try_recv() {
-                    if let ToWorker::Pause = msg {}
+                    if let ToWorker::Pause = msg {
+                        break 'epoch_loop;
+                    }
                     else if let ToWorker::Stop = msg {
                         println!("Entrenamiento cancelado por el usuario.");
+                        trainer.stop();
                         break;
                         //break 'epoch_loop'; // Rompes el ciclo de entrenamiento
                     }
