@@ -118,6 +118,9 @@ impl PerceptronExperimenter {
         match message {
             UiMessage::TargetClassSelected(iris_class) => {
                 self.target_class = Some(iris_class);
+                if let Some(tx) = &self.worker_tx {
+                    let _ = tx.send(ToWorker::TargetSelected(iris_class));
+                }
                 iced::Task::none()
             }
             
@@ -168,7 +171,7 @@ impl PerceptronExperimenter {
                 self.status = TrainingStatus::Training;
                 
                 // Recuperamos los parámetros
-                let target_class = self.target_class.unwrap_or(IrisClass::Setosa).target_name();
+                let target_class = self.target_class.unwrap_or(IrisClass::Setosa);
                 let seed = self.input_seed.parse::<u64>().unwrap_or(42);
                 let lr = self.input_lr.parse::<f32>().unwrap_or(0.001);
                 let epochs = self.input_epochs.parse::<usize>().unwrap_or(10);

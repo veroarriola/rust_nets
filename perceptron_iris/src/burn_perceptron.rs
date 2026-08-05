@@ -36,6 +36,7 @@ pub enum WorkerEvent {
 
 #[derive(Debug, Clone)]
 pub enum ToWorker {
+    TargetSelected(IrisClass),
     Start(TrainingConfig),
     Pause,
     Stop,
@@ -61,7 +62,7 @@ pub enum FromWorker {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TrainingConfig {
-    pub target_class: String,
+    pub target_class: IrisClass,
     pub seed: u64,
     pub lr: f32,
     pub target_epochs: usize,
@@ -161,11 +162,15 @@ pub struct TrainingState {
     criterion: BinaryCrossEntropyLoss<MyBackend>,
 }
 
+const RERUN_TIME_DELTA: f32 = 0.2;  // segundos
 struct Trainer {
     // Rerun recording stream
     rec: Option<RecordingStream>,
+    rerun_time: f32,
     // Conjunto de datos original (sin filtrar)
     original_dataset: Option<IrisDataset>,
+    // Clase objetivo
+    target_class: IrisClass,
 }
 
 impl Trainer {
@@ -173,7 +178,9 @@ impl Trainer {
         // Dentro de una función async (worker_loop)
         Self {
             rec: rec,
+            rerun_time: 0.0,
             original_dataset: None,
+            target_class: IrisClass::Setosa, // Valor por defecto igual que el de la IU
         }
     }
 
@@ -189,54 +196,39 @@ impl Trainer {
             },
         }
     }
-    /*
-            // Cargar conjunto de datos
-        match IrisDataset::new(iris_dataset::DATASET_SOURCE_FILE) {
-            Ok(dataset) => {
-                match rerun::RecordingStreamBuilder::new("perceptron_iris")
-                    .spawn() {
-                        Ok(rec) => {
-                            // Graficar conjunto de datos inicial en rerun
-                            match rerun_plotter::plot_dataset(&rec, &dataset) {
-                                Ok(_) => {
-                                    
-                                },
-                                Err(e) => {
-                                    obj.status_bar_message = Some(format!("⚠️ Fallo al graficar datos: {}", e));
-                                }
-                            }
-                            obj.original_dataset = Some(dataset);
-                            obj.rec = Some(rec);
-                            (obj, Task::none())
-                        },
-                        Err(e) => {
-                            obj.error_message = Some(format!("⚠️ Fallo al iniciar Rerun: {}", e));
-                            (obj, Task::none())
-                        }
-                    }
-            },
-            Err(e) => {
-                obj.error_message = Some(format!("⚠️ Error al cargar iris.csv: {}", e));
-                (obj, Task::none())
-            },
-        }
-    */
 
-    /*
-    fn flush(&mut self) {
-        
-        if let Some(rec) = self.rec.take() {
-            let _ = rec.flush_blocking();
+    fn plot_original_dataset(&mut self) {
+        if let Some(rec) = &self.rec {
+            if let Some(dataset) = &self.original_dataset {
+                if let Err(e) = rerun_plotter::plot_dataset(&rec, &dataset, self.rerun_time) {
+                    println!("⚠️ Fallo al graficar datos: {}", e);
+                }
+                self.rerun_time += RERUN_TIME_DELTA;
+            }
         }
-        
     }
-    */
+
+    fn plot_dataset_with_target(&mut self) {
+        if let Some(rec) = &self.rec {
+            if let Some(dataset) = &self.original_dataset {
+                if let Err(e) = rerun_plotter::plot_dataset_with_target(&rec, &dataset, self.target_class, self.rerun_time) {
+                    println!("⚠️ Fallo al graficar datos con clase objetivo: {}", e);
+                }
+                self.rerun_time += RERUN_TIME_DELTA;
+            }
+        }
+    }
+
+    fn set_target_class(&mut self, target_class: IrisClass) {
+        self.target_class = target_class;
+        self.plot_dataset_with_target();
+    }
 }
 
 pub async fn worker_loop(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<ToWorker>,
     tx: tokio::sync::mpsc::UnboundedSender<FromWorker>,
-    mut rec: Option<RecordingStream>,
+    rec: Option<RecordingStream>,
 ) {
     // Se ejecuta cuando main se suscribe al trabajador.
     println!("Trabajador iniciado");
@@ -251,17 +243,7 @@ pub async fn worker_loop(
     }
 
     // Graficar conjunto de datos original
-    match &trainer.rec {
-        Some(rec) => {
-            let Some(dataset) = &trainer.original_dataset.as_ref() else { return };
-            if let Err(e) = rerun_plotter::plot_dataset(&rec, &dataset) {
-                println!("⚠️ Fallo al graficar datos: {}", e);
-            }
-        },
-        None => {
-            println!("⚠️ No se pudo iniciar Rerun. Se continuará sin graficar datos.");
-        }
-    }
+    trainer.plot_original_dataset();
 
     while let Some(msg) = rx.recv().await {
         /*
@@ -274,12 +256,18 @@ pub async fn worker_loop(
         //if let Some(cmd) = msg {
             //match cmd {
                 //ToWorker::Start(config) => {
-                
-                if let ToWorker::LoadCheckpoint(string) = msg {
+                if let ToWorker::TargetSelected(target_class) = msg {
+                    println!("Trabajador recibió clase objetivo: {:?}", target_class);
+                    trainer.set_target_class(target_class);
+                }
+                else if let ToWorker::LoadCheckpoint(string) = msg {
 
                 }
                 // Si rec es None no se graficará el progreso
                 else if let ToWorker::Start(config) = msg {
+                    if config.target_class != trainer.target_class {
+                        trainer.set_target_class(config.target_class);
+                    }
                     println!("Trabajador iniciando entrenamiento...");
                     /*
                     let device = WgpuDevice::default();

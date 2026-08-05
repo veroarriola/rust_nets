@@ -2,6 +2,7 @@ use polars::prelude::*;
 use std::error::Error;
 
 use strum_macros::EnumIter;
+use serde::{Deserialize, Serialize};
 
 use burn::tensor::{backend::Backend, Tensor, TensorData};
 
@@ -9,7 +10,7 @@ use burn::tensor::{backend::Backend, Tensor, TensorData};
 pub const DATASET_SOURCE_FILE: &str = "data/iris.data";
 
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, EnumIter)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, EnumIter, Deserialize, Serialize)]
 pub enum IrisClass {
     Setosa,
     Versicolour,
