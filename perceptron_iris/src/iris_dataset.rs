@@ -66,9 +66,13 @@ impl IrisDataset {
             "petal_width",
             "species",
         ])?;
+
+        // 1. Quitar todos los renglones que contengan valores nulos
+        // `None` significa que checará todas las columnas
+        let df_clean = df.drop_nulls::<String>(None)?;
             
         Ok(Self { 
-            original_df: df
+            original_df: df_clean,
         })
     }
     

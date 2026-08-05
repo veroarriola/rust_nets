@@ -1,8 +1,39 @@
-use rerun::{Color, Points2D, RecordingStream};
+use rerun::{Color, LineStrips2D, Points2D, RecordingStream};
 use polars::prelude::*;
 use crate::iris_dataset::{IrisClass, IrisDataset};
 
 use std::error::Error;
+
+/// Convierte una lista de coordenadas (x, y) en las líneas que forman un "Tache" (X)
+fn generar_taches(puntos: &[(f32, f32)], tamano: f32) -> Vec<Vec<(f32, f32)>> {
+    let mut strips = Vec::new();
+    let d = tamano / 2.0;
+    
+    for &(x, y) in puntos {
+        // Cada tache necesita dos líneas (diagonales cruzadas)
+        strips.push(vec![(x - d, y - d), (x + d, y + d)]);
+        strips.push(vec![(x - d, y + d), (x + d, y - d)]);
+    }
+    strips
+}
+
+/// Convierte una lista de coordenadas (x, y) en líneas cerradas que forman un Triángulo
+fn generar_triangulos(puntos: &[(f32, f32)], tamano: f32) -> Vec<Vec<(f32, f32)>> {
+    let mut strips = Vec::new();
+    let d = tamano / 2.0;
+    
+    for &(x, y) in puntos {
+        // Una sola línea continua que vuelve al punto de inicio
+        strips.push(vec![
+            (x, y + d),         // Punta superior
+            (x - d, y - d),     // Esquina inferior izquierda
+            (x + d, y - d),     // Esquina inferior derecha
+            (x, y + d),         // Cierra arriba
+        ]);
+    }
+    strips
+}
+
 
 fn plot_2_characteristics(
     rec: &RecordingStream,

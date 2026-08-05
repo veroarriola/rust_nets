@@ -69,15 +69,6 @@ pub struct TrainingConfig {
     pub validation_interval: usize,
 }
 
-// Definimos el Backend con Autodiff para entrenamiento en GPU
-type MyBackend = Autodiff<Wgpu>;
-pub type MyOptimizer = OptimizerAdaptor<
-    burn::optim::Adam,
-    Perceptron<MyBackend>,   // trait: burn::module::AutodiffModule<AutodiffBackend>
-    MyBackend,               // trait: AutodiffBackend
->;
-
-
 
 
 /*
@@ -150,6 +141,7 @@ impl<B: Backend> InferenceStep for Perceptron<B> {
     }
 }
 
+/*
 pub struct TrainingState {
     // Original dataset
     original_dataset: Option<IrisDataset>,
@@ -161,8 +153,19 @@ pub struct TrainingState {
     optimizador: Option<MyOptimizer>,
     criterion: BinaryCrossEntropyLoss<MyBackend>,
 }
+*/
 
 const RERUN_TIME_DELTA: f32 = 0.2;  // segundos
+// Definimos el Backend con Autodiff para entrenamiento en GPU
+type MyBackend = Autodiff<Wgpu>;
+
+pub type MyOptimizer = OptimizerAdaptor<
+    burn::optim::Adam,
+    //burn::optim::Sgd<MyBackend>,
+    Perceptron<MyBackend>,   // trait: burn::module::AutodiffModule<AutodiffBackend>
+    MyBackend,               // trait: AutodiffBackend
+>;
+
 struct Trainer {
     // Rerun recording stream
     rec: Option<RecordingStream>,
@@ -171,16 +174,29 @@ struct Trainer {
     original_dataset: Option<IrisDataset>,
     // Clase objetivo
     target_class: IrisClass,
+
+    //device: MyBackend,
+    //device: Autodiff<burn_fusion::backend::Fusion<CubeBackend<WgpuRuntime, f32, i32, u32>>>,
+    device: WgpuDevice,
+    model: Perceptron<MyBackend>,
+    optim: MyOptimizer,
 }
 
 impl Trainer {
     fn new(rec: Option<RecordingStream>) -> Self {
         // Dentro de una función async (worker_loop)
+        let device = WgpuDevice::default();
         Self {
             rec: rec,
             rerun_time: 0.0,
             original_dataset: None,
             target_class: IrisClass::Setosa, // Valor por defecto igual que el de la IU
+            device: device.clone(),
+            model: Perceptron::new(&device),
+            //optim: burn::optim::SgdConfig::new()
+            //    .init::<MyBackend, Perceptron<MyBackend>>(),
+            optim: burn::optim::AdamConfig::new()
+                .init::<MyBackend, Perceptron<MyBackend>>(),
         }
     }
 
@@ -246,71 +262,62 @@ pub async fn worker_loop(
     trainer.plot_original_dataset();
 
     while let Some(msg) = rx.recv().await {
-        /*
-        match msg {
-            ToWorker::Start(config) => {
-
-            }
+        if let ToWorker::TargetSelected(target_class) = msg {
+            println!("Trabajador recibió clase objetivo: {:?}", target_class);
+            trainer.set_target_class(target_class);
         }
-        */
-        //if let Some(cmd) = msg {
-            //match cmd {
-                //ToWorker::Start(config) => {
-                if let ToWorker::TargetSelected(target_class) = msg {
-                    println!("Trabajador recibió clase objetivo: {:?}", target_class);
-                    trainer.set_target_class(target_class);
-                }
-                else if let ToWorker::LoadCheckpoint(string) = msg {
+        else if let ToWorker::LoadCheckpoint(string) = msg {
 
-                }
-                // Si rec es None no se graficará el progreso
-                else if let ToWorker::Start(config) = msg {
-                    if config.target_class != trainer.target_class {
-                        trainer.set_target_class(config.target_class);
+        }
+        // Si rec es None no se graficará el progreso
+        else if let ToWorker::Start(config) = msg {
+            if config.target_class != trainer.target_class {
+                trainer.set_target_class(config.target_class);
+            }
+            println!("Trabajador iniciando entrenamiento...");
+            
+            // Bucle manual de épocas
+            'epoch_loop: for epoch in 0..config.target_epochs {
+                // Revisamos si el usuario envió mensajes
+                if let Ok(msg) = rx.try_recv() {
+                    if let ToWorker::Pause = msg {}
+                    else if let ToWorker::Stop = msg {
+                        println!("Entrenamiento cancelado por el usuario.");
+                        break;
+                        //break 'epoch_loop'; // Rompes el ciclo de entrenamiento
                     }
-                    println!("Trabajador iniciando entrenamiento...");
-                    /*
-                    let device = WgpuDevice::default();
-                    let mut model: Perceptron<MyBackend> = Perceptron::new(&device);
-                    let mut optim = burn::optim::SgdConfig::new()
-                        .init::<MyBackend, Perceptron<MyBackend>>();
-                    
-                    // Bucle manual de épocas
-                    'epoch_loop: for epoch in 0..config.target_epochs {
-                        // Das un "vistazo rápido" para ver si el usuario pidió detener
-                        if let Ok(ToWorker::Stop) = rx.try_recv() {
-                            println!("Entrenamiento cancelado por el usuario.");
-                            break;
-                            //break 'epoch_loop'; // Rompes el ciclo de entrenamiento
-                        }
-                        // Iteramos sobre los lotes (asumiendo que tienes tu dataloader)
-                        // for batch in train_dataloader.iter() {
-                        //     let output = model.step(batch);
-                        //     model = optim.step(learning_rate, model, output.grads);
-                        // }
+                    else if let ToWorker::Exit = msg {
+                        println!("Trabajador saliendo por petición del usuario.");
+                        let _ = tx.send(FromWorker::WorkerExited);
+                        break 'epoch_loop;
+                    }
+                }
+                // Iteramos sobre los lotes (asumiendo que tienes tu dataloader)
+                // for batch in train_dataloader.iter() {
+                //     let output = model.step(batch);
+                //     model = optim.step(learning_rate, model, output.grads);
+                // }
 
-                        // --- INTEGRACIÓN CON RERUN E ICED ---
-                        // Aquí tienes acceso directo al modelo en cada época
-                        // Puedes extraer los pesos y el sesgo sin pelear con el Learner:
-                        
-                        // let pesos = model.linear.weight.val().into_data().convert::<f32>().value;
-                        // let sesgo = model.linear.bias.unwrap().val().into_data().convert::<f32>().value;
-                        
-                        // Le envías los datos frescos a tu hilo principal para graficar:
-                        // let _ = tx.send(FromWorker::EpochUpdate { epoch, pesos, sesgo });
-                    }
-                    */
-                    
-                    println!("Trabajador terminó entrenamiento.");
-                    let _ = tx.send(FromWorker::TrainingFinished);
-                }
-                else if let ToWorker::Exit = msg {
-                    println!("Trabajador sin trabajo saliendo.");
-                    let _ = tx.send(FromWorker::WorkerExited);
-                    break;
-                }
-            //}
-        //}
+                // --- INTEGRACIÓN CON RERUN E ICED ---
+                // Aquí tienes acceso directo al modelo en cada época
+                // Puedes extraer los pesos y el sesgo sin pelear con el Learner:
+                
+                // let pesos = model.linear.weight.val().into_data().convert::<f32>().value;
+                // let sesgo = model.linear.bias.unwrap().val().into_data().convert::<f32>().value;
+                
+                // Le envías los datos frescos a tu hilo principal para graficar:
+                // let _ = tx.send(FromWorker::EpochUpdate { epoch, pesos, sesgo });
+            }
+            
+            
+            println!("Trabajador terminó entrenamiento.");
+            let _ = tx.send(FromWorker::TrainingFinished);
+        }
+        else if let ToWorker::Exit = msg {
+            println!("Trabajador sin trabajo saliendo.");
+            let _ = tx.send(FromWorker::WorkerExited);
+            break;
+        }
     }
     println!("Trabajador terminado.");
     let _ = tx.send(FromWorker::WorkerExited);
