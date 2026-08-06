@@ -173,7 +173,7 @@ impl PerceptronExperimenter {
                 // Recuperamos los parámetros
                 let target_class = self.target_class.unwrap_or(IrisClass::Setosa);
                 let seed = self.input_seed.parse::<u64>().unwrap_or(42);
-                let lr = self.input_lr.parse::<f32>().unwrap_or(0.001);
+                let lr = self.input_lr.parse::<f64>().unwrap_or(0.001);
                 let epochs = self.input_epochs.parse::<usize>().unwrap_or(10);
 
                 if let Some(tx) = &self.worker_tx {

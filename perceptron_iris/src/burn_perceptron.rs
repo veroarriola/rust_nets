@@ -15,11 +15,15 @@ use burn::{
 };
 
 use burn::backend::{Wgpu, wgpu::WgpuDevice, Autodiff};
+use burn::optim::Optimizer;
 use burn::optim::adaptor::OptimizerAdaptor;
 
 use rerun::RecordingStream;
 
 use serde::{Deserialize, Serialize};
+
+use std::sync::Arc;
+use burn::data::dataloader::DataLoader;
 
 use crate::iris_dataset;
 use crate::iris_dataset::{IrisBatch, IrisClass, IrisDataset};
@@ -67,7 +71,7 @@ pub enum FromWorker {
 pub struct TrainingConfig {
     pub target_class: IrisClass,
     pub seed: u64,
-    pub lr: f32,
+    pub lr: f64,
     pub target_epochs: usize,
     pub validation_interval: usize,
 }
@@ -80,8 +84,8 @@ pub struct TrainingConfig {
 #[derive(Module, Debug)]
 pub struct Perceptron<B: Backend> {
     // La capa lineal maneja los pesos (W) y el sesgo (b)
-    pub linear: Linear<B>,
-    pub loss_fn: BinaryCrossEntropyLoss<B>,
+    linear: Linear<B>,
+    loss_fn: BinaryCrossEntropyLoss<B>,
 }
 
 impl<B: Backend> Perceptron<B> {
@@ -171,6 +175,8 @@ struct Trainer {
     model: Perceptron<MyBackend>,
     optim: MyOptimizer,
 
+    train_data_loader: Option<Arc<dyn DataLoader<MyBackend, IrisBatch<MyBackend>>>>,
+    val_data_loader: Option<Arc<dyn DataLoader<MyBackend, IrisBatch<MyBackend>>>>,
     current_epoch: usize,
 }
 
@@ -184,13 +190,32 @@ impl Trainer {
             original_dataset: None,
             target_class: IrisClass::Setosa, // Valor por defecto igual que el de la IU
             model: Perceptron::new(&device),
-            current_epoch: 0,
             //optim: burn::optim::SgdConfig::new()
             //    .init::<MyBackend, Perceptron<MyBackend>>(),
             optim: burn::optim::AdamConfig::new().init::<MyBackend, Perceptron<MyBackend>>(),
+            
+            train_data_loader: None,
+            val_data_loader: None,
+            current_epoch: 0,
         }
     }
-    
+    fn start(&mut self, config: TrainingConfig) {
+        if config.target_class != self.target_class {
+            self.set_target_class(config.target_class);
+        }
+        if self.train_data_loader.is_none() || self.val_data_loader.is_none() {
+            let (train_data_loader, val_data_loader) = iris_dataset::build_dataloaders::<MyBackend>(
+                self.original_dataset.as_ref().unwrap().original_vec.clone(),
+                config.seed).unwrap(); // Aseguramos que el dataset original esté cargado
+            
+            self.train_data_loader = Some(train_data_loader);
+            self.val_data_loader = Some(val_data_loader);
+        }
+            
+        // Aquí podrías reiniciar el optimizador si es necesario
+        // self.optim = burn::optim::AdamConfig::new().init::<MyBackend, Perceptron<MyBackend>>();
+    }
+
     fn stop(&mut self) {
         self.current_epoch = 0;
     }
@@ -266,10 +291,8 @@ pub async fn worker_loop(
         }
         // Si rec es None no se graficará el progreso
         else if let ToWorker::Start(config) = msg {
-            if config.target_class != trainer.target_class {
-                trainer.set_target_class(config.target_class);
-            }
             println!("Trabajador iniciando entrenamiento...");
+            trainer.start(config.clone());
             
             // Bucle manual de épocas
             'epoch_loop: while trainer.current_epoch < config.target_epochs {
@@ -291,17 +314,18 @@ pub async fn worker_loop(
                     }
                 }
                 // Iteramos sobre los lotes (asumiendo que tienes tu dataloader)
-                // for batch in train_dataloader.iter() {
-                //     let output = model.step(batch);
-                //     model = optim.step(learning_rate, model, output.grads);
-                // }
+                for batch in trainer.train_data_loader.as_ref().unwrap().iter() {
+                    // grads, (output: loss, predictions, batch.targets)
+                    let output = TrainStep::step(&trainer.model, batch);
+                    trainer.model = trainer.optim.step(config.lr, trainer.model, output.grads);
+                }
 
                 // --- INTEGRACIÓN CON RERUN E ICED ---
                 // Aquí tienes acceso directo al modelo en cada época
                 // Puedes extraer los pesos y el sesgo sin pelear con el Learner:
                 
-                // let pesos = model.linear.weight.val().into_data().convert::<f32>().value;
-                // let sesgo = model.linear.bias.unwrap().val().into_data().convert::<f32>().value;
+                //let pesos = trainer.model.linear.weight.val().into_data().convert::<f32>().value;
+                //let sesgo = trainer.model.linear.bias.unwrap().val().into_data().convert::<f32>().value;
                 
                 // Le envías los datos frescos a tu hilo principal para graficar:
                 // let _ = tx.send(FromWorker::EpochUpdate { epoch, pesos, sesgo });

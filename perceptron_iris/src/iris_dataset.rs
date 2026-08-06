@@ -46,6 +46,87 @@ impl IrisClass {
 }
 
 
+/*
+ * Conjunto de datos para Polars
+ */
+
+#[derive(Debug, Clone)]
+pub struct IrisDataset {
+    pub original_df : DataFrame,
+    pub original_vec : Vec<IrisItem>,
+}
+
+impl IrisDataset {
+
+    pub fn new(csv_path: &str) -> Result<Self, PolarsError> {
+        let mut df = CsvReader::from_path(csv_path)?
+            .has_header(false)
+            .finish()?;
+        df.set_column_names(&[
+            "sepal_length",
+            "sepal_width",
+            "petal_length",
+            "petal_width",
+            "species",
+        ])?;
+
+        // 1. Quitar todos los renglones que contengan valores nulos
+        // `None` significa que checará todas las columnas
+        let df_clean = df.drop_nulls::<String>(None)?;
+        let original_vec = Self::df_to_vec(&df_clean)?;
+            
+        Ok(Self { 
+            original_df: df_clean,
+            original_vec,
+        })
+    }
+
+    fn df_to_vec(df_clean: &DataFrame) -> Result<Vec<IrisItem>, PolarsError> {
+        //let df_clean = &self.original_df;
+        let num_rows = df_clean.height();
+
+        // 1. Extraer columnas (Cast a f32 explícito recomendado para evitar errores)
+        let sl = df_clean.column("sepal_length")?.cast(&DataType::Float32)?.f32()?.clone();
+        let sw = df_clean.column("sepal_width")?.cast(&DataType::Float32)?.f32()?.clone();
+        let pl = df_clean.column("petal_length")?.cast(&DataType::Float32)?.f32()?.clone();
+        let pw = df_clean.column("petal_width")?.cast(&DataType::Float32)?.f32()?.clone();
+        
+        // Nota: Dependiendo de la versión de Polars, puede ser .str() o .utf8()
+        let species = df_clean.column("species")?.str()?.clone();
+
+        // 2. Comprimir en un Vec<IrisItem>
+        let mut items = Vec::with_capacity(num_rows);
+        
+        let it_sl = sl.into_no_null_iter();
+        let it_sw = sw.into_no_null_iter();
+        let it_pl = pl.into_no_null_iter();
+        let it_pw = pw.into_no_null_iter();
+        let it_sp = species.into_no_null_iter();
+
+        for ((((sl_v, sw_v), pl_v), pw_v), sp_v) in it_sl.zip(it_sw).zip(it_pl).zip(it_pw).zip(it_sp) {
+            // Mapeo directo de String a entero para CrossEntropyLoss
+            let label = match sp_v {
+                "Iris-setosa" => 0,
+                "Iris-versicolor" => 1,
+                _ => 2, // Iris-virginica
+            };
+
+            items.push(IrisItem {
+                features: [sl_v, sw_v, pl_v, pw_v],
+                label,
+            });
+        }
+
+        Ok(items)
+    }
+    
+}
+
+
+/*
+ * Conjuntos de datos para Burn
+ */
+
 #[derive(Clone, Debug)]
 pub struct IrisItem {
     pub features: [f32; 4],
@@ -99,61 +180,26 @@ impl<B: Backend> Batcher<B, IrisItem, IrisBatch<B>> for IrisBatcher<B> {
     }
 }
 
-fn build_dataloaders<B: Backend>(
-    df_clean: DataFrame, 
-    device: B::Device, 
+pub fn build_dataloaders<B: Backend>(
+    mut items: Vec<IrisItem>,
     seed: u64
 ) -> PolarsResult<(
     Arc<dyn DataLoader<B, IrisBatch<B>>>, 
-    Arc<dyn DataLoader<B,IrisBatch<B>>>
+    Arc<dyn DataLoader<B, IrisBatch<B>>>
 )> {
-    let num_rows = df_clean.height();
-
-    // 1. Extraer columnas (Cast a f32 explícito recomendado para evitar errores)
-    let sl = df_clean.column("sepal_length")?.cast(&DataType::Float32)?.f32()?.clone();
-    let sw = df_clean.column("sepal_width")?.cast(&DataType::Float32)?.f32()?.clone();
-    let pl = df_clean.column("petal_length")?.cast(&DataType::Float32)?.f32()?.clone();
-    let pw = df_clean.column("petal_width")?.cast(&DataType::Float32)?.f32()?.clone();
-    
-    // Nota: Dependiendo de la versión de Polars, puede ser .str() o .utf8()
-    let species = df_clean.column("species")?.str()?.clone();
-
-    // 2. Comprimir en un Vec<IrisItem>
-    let mut items = Vec::with_capacity(num_rows);
-    
-    let it_sl = sl.into_no_null_iter();
-    let it_sw = sw.into_no_null_iter();
-    let it_pl = pl.into_no_null_iter();
-    let it_pw = pw.into_no_null_iter();
-    let it_sp = species.into_no_null_iter();
-
-    for ((((sl_v, sw_v), pl_v), pw_v), sp_v) in it_sl.zip(it_sw).zip(it_pl).zip(it_pw).zip(it_sp) {
-        // Mapeo directo de String a entero para CrossEntropyLoss
-        let label = match sp_v {
-            "Iris-setosa" => 0,
-            "Iris-versicolor" => 1,
-            _ => 2, // Iris-virginica
-        };
-
-        items.push(IrisItem {
-            features: [sl_v, sw_v, pl_v, pw_v],
-            label,
-        });
-    }
-
-    // 3. Barajar los datos usando la semilla proporcionada para reproducibilidad
+    // Barajar los datos usando la semilla proporcionada para reproducibilidad
     let mut rng = StdRng::seed_from_u64(seed);
     items.shuffle(&mut rng);
 
-    // 4. Dividir en Entrenamiento (80%) y Validación (20%)
+    // Dividir en Entrenamiento (80%) y Validación (20%)
     let split_idx = (items.len() as f32 * 0.8) as usize;
     let (train_items, val_items) = items.split_at(split_idx);
 
-    // 5. Convertir a Dataset de Burn
+    // Convertir a Dataset de Burn
     let train_dataset = InMemDataset::new(train_items.to_vec());
     let val_dataset = InMemDataset::new(val_items.to_vec());
 
-    // 6. Construir los DataLoaders
+    // Construir los DataLoaders
     let batcher_train = IrisBatcher::<B>::new();
     let batcher_val = IrisBatcher::<B>::new();
 
@@ -168,99 +214,3 @@ fn build_dataloaders<B: Backend>(
 
     Ok((train_loader, val_loader))
 }
-
-
-#[derive(Debug, Clone)]
-pub struct IrisDataset {
-    pub original_df : DataFrame,
-}
-
-impl IrisDataset {
-
-    pub fn new(csv_path: &str) -> Result<Self, PolarsError> {
-        let mut df = CsvReader::from_path(csv_path)?
-            .has_header(false)
-            .finish()?;
-        df.set_column_names(&[
-            "sepal_length",
-            "sepal_width",
-            "petal_length",
-            "petal_width",
-            "species",
-        ])?;
-
-        // 1. Quitar todos los renglones que contengan valores nulos
-        // `None` significa que checará todas las columnas
-        let df_clean = df.drop_nulls::<String>(None)?;
-            
-        Ok(Self { 
-            original_df: df_clean,
-        })
-    }
-    
-}
-
-
-// ¿Ya no?
-/*
-pub fn load_dataset_for_burn<B: Backend>(
-    csv_path: &str, 
-    target_flower: &str, 
-    device: &B::Device
-) -> Result<IrisBatch<B>, Box<dyn Error>> {
-    
-    // 1. LEER Y TRANSFORMAR CON POLARS
-    // Usamos LazyFrame para procesar los datos eficientemente
-    let df = LazyCsvReader::new(csv_path)
-        .has_header(false)
-        .finish()?
-        // 2. Renombramos las columnas genéricas por las correctas
-        .rename(
-            ["column_1", "column_2", "column_3", "column_4", "column_5"],
-            ["sepal_length", "sepal_width", "petal_length", "petal_width", "species"]
-        )
-        // Lógica Uno-contra-el-Resto: Si es la flor elegida = 1.0, si no = 0.0
-        .with_column(
-            when(col("species").eq(lit(target_flower)))
-            .then(lit(1.0f32))
-            .otherwise(lit(0.0f32))
-            .alias("label")
-        )
-        .collect()?; // Ejecutamos la transformación
-
-    let num_rows = df.height();
-
-    // 2. EXTRAER LOS DATOS HACIA VECTORES DE RUST
-    // Extraemos las 4 columnas de características (features)
-    let features_df = df.select(["sepal_length", "sepal_width", "petal_length", "petal_width"])?;
-    
-    // Convertimos el DataFrame a un vector plano (flatten) de f32
-    // Polars guarda los datos en columnas, así que iteramos fila por fila
-    let mut inputs_vec = Vec::with_capacity(num_rows * 4);
-    for i in 0..num_rows {
-        // En un proyecto real, se extrae mediante ndarray o iteradores por columna para mayor velocidad,
-        // pero esto es muy ilustrativo para una demo.
-        let sl: f32 = features_df.column("sepal_length")?.f32()?.get(i).unwrap_or(0.0);
-        let sw: f32 = features_df.column("sepal_width")?.f32()?.get(i).unwrap_or(0.0);
-        let pl: f32 = features_df.column("petal_length")?.f32()?.get(i).unwrap_or(0.0);
-        let pw: f32 = features_df.column("petal_width")?.f32()?.get(i).unwrap_or(0.0);
-        inputs_vec.extend_from_slice(&[sl, sw, pl, pw]);
-    }
-
-    // Extraemos los objetivos (targets: 1.0 o 0.0)
-    let targets_series = df.column("label")?.f32()?;
-    let targets_vec: Vec<f32> = targets_series.into_iter().map(|v| v.unwrap_or(0.0)).collect();
-
-    // 3. CONVERTIR A TENSORES DE BURN
-    // TensorData necesita los datos planos y la forma (shape) de la matriz
-    let input_data = TensorData::new(inputs_vec, [num_rows, 4]);
-    let target_data = TensorData::new(targets_vec, [num_rows, 1]);
-
-    // Creamos los tensores enviándolos a la CPU o GPU (device)
-    let inputs = Tensor::<B, 2>::from_data(input_data, device);
-    let targets = Tensor::<B, 2>::from_data(target_data, device);
-
-    // Devolvemos el lote empaquetado
-    Ok(IrisBatch { inputs, targets })
-}
-    */
