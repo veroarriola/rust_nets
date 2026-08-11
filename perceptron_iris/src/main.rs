@@ -183,7 +183,7 @@ impl PerceptronExperimenter {
                         seed,
                         lr,
                         target_epochs: epochs,
-                        validation_interval: 2, // Aquí asignas tu intervalo de validación
+                        //validation_interval: 2, // Aquí asignas tu intervalo de validación
                     };
 
                     // 2. Lo pasamos como parámetro a la variante Start
@@ -375,16 +375,54 @@ impl PerceptronExperimenter {
         ]
         .spacing(10)
         .padding(20)
-        .width(Length::Fill);
+        .width(Length::Fixed(400.0));
 
         /*
          * Principal
          */
 
+        // Calculamos el porcentaje de avance en el lote del 0.0 al 100.0
+        let porcentaje_progreso = if self.total_batches > 0 {
+            (self.current_batch as f32 / self.total_batches as f32) * 100.0
+        } else {
+            0.0
+        };
+
+        // Construimos la lista visual de checkpoints
+        let mut checkpoints_list = column![].spacing(8);
+        
+        if self.checkpoints_disponibles.is_empty() {
+            checkpoints_list = checkpoints_list.push(text("Ninguno todavía...").size(16));
+        } else {
+            for path in &self.checkpoints_disponibles {
+                // Agregamos cada ruta como un texto a la columna
+                checkpoints_list = checkpoints_list.push(text(path).size(16));
+            }
+        }
+
+        // Envolvemos la lista en un área con scroll
+        let checkpoints_scroll = scrollable(checkpoints_list).height(Length::Fill);
+
+
         // Panel principal
-        let main_content = container(
-            text("Aquí van tus gráficas y controles..."),
-        )
+        let main_content = column![
+            text("Estado de la Red").size(24),
+
+            Space::new().height(Length::Fixed(10.0)), // Separador visual
+
+            text(format!("Época actual: {}", self.current_epoch)),
+            text(format!("Pérdida: {:.4}", self.current_loss)),
+            // Barrita de progreso
+            text(format!("Progreso del lote: {} / {}", self.current_batch, self.total_batches)),
+            progress_bar(0.0..=100.0, porcentaje_progreso),
+            
+            Space::new().height(Length::Fixed(20.0)), // Separador visual
+
+            text("Puntos de control guardados:").size(20),
+            checkpoints_scroll,
+        ]
+        .spacing(10)
+        .padding(20)
         .width(Length::Fill)
         .height(Length::Fill);
 
@@ -393,18 +431,18 @@ impl PerceptronExperimenter {
         let status_text = "";
 
         let status_bar = container(
-        text(status_text)
-            .size(14)
-            // SOLUCIÓN 1 (El Lambda que pediste):
-            .style(|_theme: &Theme| TextStyle {
-                color: Some(Color::from_rgb(0.8, 0.1, 0.1)),
-            })
+            text(status_text)
+                .size(14)
+                // SOLUCIÓN 1 (El Lambda que pediste):
+                .style(|_theme: &Theme| TextStyle {
+                    color: Some(Color::from_rgb(0.8, 0.1, 0.1)),
+                })
         )
         .width(Length::Fill)
         .padding(5)
         // Opcional: Darle un color de fondo a la barra usando un lambda también
         .style(|_theme: &Theme| ContainerStyle {
-            background: Some(iced::Background::Color(Color::from_rgb(0.95, 0.95, 0.95))),
+            background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
             ..Default::default()
         });
 

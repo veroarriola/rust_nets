@@ -112,9 +112,9 @@ impl TrainingState {
     fn save_checkpoint(&mut self) -> String {
         // Incluimos semilla y learning rate en el nombre de la carpeta
         let dir_path = format!(
-            "checkpoints/seed_{}_lr_{}_epoch_{}",
-            self.current_seed,
+            "checkpoints/lr_{}/seed_{}/epoch_{}",
             self.current_lr,
+            self.current_seed,
             self.current_epoch);
         fs::create_dir_all(&dir_path).expect("Fallo al crear directorio de checkpoint");
 

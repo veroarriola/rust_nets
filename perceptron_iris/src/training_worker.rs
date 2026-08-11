@@ -17,11 +17,17 @@ use crate::burn_perceptron::Perceptron;
 use burn::train::TrainStep;
 use burn::train::InferenceStep;
 
-
 /* Entrenamiento */
 use burn::backend::{Wgpu, wgpu::WgpuDevice, Autodiff};
 use burn::optim::Optimizer;
 use burn::optim::adaptor::OptimizerAdaptor;
+use crate::iris_dataset::BATCH_SIZE;
+
+/* Persistencia */
+use std::fs;
+use burn::prelude::Module;
+use burn::record::{CompactRecorder, Recorder};
+
 
 /*
  * Comunicación entre hilos
@@ -66,7 +72,7 @@ pub struct TrainingConfig {
     pub seed: u64,
     pub lr: f64,
     pub target_epochs: usize,
-    pub validation_interval: usize,
+    //pub validation_interval: usize,
 }
 
 
@@ -90,8 +96,9 @@ struct Trainer {
     // Clase objetivo
     target_class: IrisClass,
 
+    training_config: Option<TrainingConfig>,
     model: Perceptron<MyBackend>,
-    optim: MyOptimizer,
+    optimizer: MyOptimizer,
 
     train_data_loader: Option<Arc<dyn DataLoader<MyBackend, IrisBatch<MyBackend>>>>,
     val_data_loader: Option<Arc<dyn DataLoader<MyBackend, IrisBatch<MyBackend>>>>,
@@ -107,20 +114,24 @@ impl Trainer {
             rerun_time: 0.0,
             original_dataset: None,
             target_class: IrisClass::Setosa, // Valor por defecto igual que el de la IU
+
+            training_config: None,
             model: Perceptron::new(&device),
             //optim: burn::optim::SgdConfig::new()
             //    .init::<MyBackend, Perceptron<MyBackend>>(),
-            optim: burn::optim::AdamConfig::new().init::<MyBackend, Perceptron<MyBackend>>(),
+            optimizer: burn::optim::AdamConfig::new().init::<MyBackend, Perceptron<MyBackend>>(),
             
             train_data_loader: None,
             val_data_loader: None,
             current_epoch: 0,
         }
     }
+
     fn start(&mut self, config: TrainingConfig) {
         if config.target_class != self.target_class {
             self.set_target_class(config.target_class);
         }
+        self.training_config = Some(config.clone());
         if self.train_data_loader.is_none() || self.val_data_loader.is_none() {
             let (train_data_loader, val_data_loader) = iris_dataset::build_dataloaders::<MyBackend>(
                 self.original_dataset.as_ref().unwrap().original_vec.clone(),
@@ -136,8 +147,13 @@ impl Trainer {
 
     fn stop(&mut self) {
         self.current_epoch = 0;
+        self.train_data_loader = None;
+        self.val_data_loader = None;
     }
 
+    /*
+     * Carga los datos en memoria, pero no crea conjuntos para entrenamiento.
+     */
     fn load_dataset(&mut self) -> Result<(), String> {
         // Cargar conjunto de datos
         match IrisDataset::new(iris_dataset::DATASET_SOURCE_FILE) {
@@ -148,6 +164,48 @@ impl Trainer {
             Err(e) => {
                 Err(format!("⚠️ Error al cargar iris.csv: {}", e))
             },
+        }
+    }
+
+    fn save_checkpoint(&mut self) -> String {
+        if let Some(training_config) = &self.training_config {
+            // Incluimos semilla y learning rate en el nombre de la carpeta
+            let dir_path = format!(
+                "checkpoints/target_{}/lr_{}/seed_{}/epoch_{}",
+                training_config.target_class.target_name(),
+                training_config.lr,
+                training_config.seed,
+                self.current_epoch);
+            fs::create_dir_all(&dir_path).expect("Fallo al crear directorio de checkpoint");
+
+            let recorder = CompactRecorder::new();
+
+            // 1. Guardamos el Modelo
+            recorder
+                .record(
+                    self.model.clone().into_record(),
+                    format!("{}/model", dir_path).into(),
+                )
+                .expect("Fallo al guardar los pesos del modelo");
+
+            // 2. Guardamos el Optimizador (Adam: momentum m, varianza v y paso t)
+            recorder
+                .record(
+                    self.optimizer.to_record(),
+                    format!("{}/optimizer", dir_path).into(),
+                )
+                .expect("Fallo al guardar el estado del optimizador");
+            
+            let mut training_config_copy = training_config.clone();
+            training_config_copy.target_epochs = self.current_epoch;
+
+            let meta_file = std::fs::File::create(format!("{}/meta.json", dir_path)).unwrap();
+            serde_json::to_writer_pretty(meta_file, &training_config_copy).expect("Fallo al escribir meta.json");
+
+            return dir_path
+        }
+        else {
+            panic!("[worker] Se llamó guardar punto de control sin haber configurado el entrenamiento");
         }
     }
 
@@ -210,33 +268,74 @@ pub async fn worker_loop(
         // Si rec es None no se graficará el progreso
         else if let ToWorker::Start(config) = msg {
             println!("Trabajador iniciando entrenamiento...");
-            trainer.start(config.clone());
+            trainer.start(config.clone());  // Inicia el dataloader
             
             // Bucle manual de épocas
             'epoch_loop: while trainer.current_epoch < config.target_epochs {
-                // Revisamos si el usuario envió mensajes
-                if let Ok(msg) = rx.try_recv() {
-                    if let ToWorker::Pause = msg {
-                        break 'epoch_loop;
-                    }
-                    else if let ToWorker::Stop = msg {
-                        println!("Entrenamiento cancelado por el usuario.");
-                        trainer.stop();
-                        break;
-                        //break 'epoch_loop'; // Rompes el ciclo de entrenamiento
-                    }
-                    else if let ToWorker::Exit = msg {
-                        println!("Trabajador saliendo por petición del usuario.");
-                        let _ = tx.send(FromWorker::WorkerExited);
-                        break 'epoch_loop;
-                    }
+                trainer.current_epoch += 1;
+
+                if let Some(rec) = &trainer.rec {
+                    rec.set_time_sequence("epoca", trainer.current_epoch as i64);
                 }
-                // Iteramos sobre los lotes (asumiendo que tienes tu dataloader)
-                for batch in trainer.train_data_loader.as_ref().unwrap().iter() {
+
+                let train_data_loader = trainer.train_data_loader.as_mut().unwrap();
+                let total_batches = train_data_loader.num_items() / BATCH_SIZE;
+
+                // Iteramos sobre los lotes (asumiendo que ya se tiene el dataloader)
+                let mut total_loss = 0.0;
+                let mut n_batches = 0;
+                for batch in train_data_loader.iter() {
+                    n_batches += 1;
+
+                    // Revisamos si el usuario envió mensajes
+                    if let Ok(msg) = rx.try_recv() {
+                        if let ToWorker::Pause = msg {
+                            break 'epoch_loop;
+                        }
+                        else if let ToWorker::Stop = msg {
+                            println!("Entrenamiento cancelado por el usuario.");
+                            break 'epoch_loop; // Rompes el ciclo de entrenamiento
+                        }
+                        else if let ToWorker::Exit = msg {
+                            println!("Trabajador saliendo por petición del usuario.");
+                            let _ = tx.send(FromWorker::WorkerExited);
+                            break 'epoch_loop;
+                        }
+                    }
+                    
                     // grads, (output: loss, predictions, batch.targets)
                     let output = TrainStep::step(&trainer.model, batch);
-                    trainer.model = trainer.optim.step(config.lr, trainer.model, output.grads);
+                    total_loss += output.item.loss.clone().into_data().to_vec::<f32>().unwrap()[0];
+
+                    trainer.model = trainer.optimizer.step(config.lr, trainer.model, output.grads);
+
+                    let _ = tx.send(FromWorker::BatchProgress {
+                        epoch: trainer.current_epoch,
+                        current_batch: n_batches,
+                        total_batches,
+                    });
                 }
+
+                // --- VISUALIZACIÓN 1: Pérdida media de la época ---
+                let average_train_loss = total_loss / n_batches as f32;
+                let trainer_config = &trainer.training_config.as_ref().unwrap();
+                let loss_path = format!(
+                    "metrics/target_{}/lr_{}/seed_{}/loss_train",
+                    trainer_config.target_class.target_name(),
+                    trainer_config.lr,
+                    trainer_config.seed,
+                );
+
+                if let Some(rec) = &trainer.rec {
+                    let _ = rec.log(loss_path, &rerun::Scalars::new([average_train_loss as f64]));
+                }
+
+                println!("Época {}: Loss Media = {:.4}", trainer.current_epoch, average_train_loss);
+
+                let _ = tx.send(FromWorker::EpochDone {
+                    epoch: trainer.current_epoch,
+                    loss: average_train_loss,
+                });
 
                 // --- INTEGRACIÓN CON RERUN E ICED ---
                 // Aquí tienes acceso directo al modelo en cada época
@@ -249,7 +348,7 @@ pub async fn worker_loop(
                 // let _ = tx.send(FromWorker::EpochUpdate { epoch, pesos, sesgo });
             }
             
-            
+            trainer.stop();
             println!("Trabajador terminó entrenamiento.");
             let _ = tx.send(FromWorker::TrainingFinished);
         }

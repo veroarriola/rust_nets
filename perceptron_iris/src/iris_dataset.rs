@@ -15,6 +15,7 @@ use std::marker::PhantomData;
 use burn::data::dataloader::DataLoader;
 
 pub const DATASET_SOURCE_FILE: &str = "data/iris.data";
+pub const BATCH_SIZE: usize = 16;
 
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, EnumIter, Deserialize, Serialize)]
@@ -204,12 +205,12 @@ pub fn build_dataloaders<B: Backend>(
     let batcher_val = IrisBatcher::<B>::new();
 
     let train_loader = DataLoaderBuilder::new(batcher_train)
-        .batch_size(16)
+        .batch_size(BATCH_SIZE)
         .shuffle(seed) // Mezclado interno por epoch en el dataloader
         .build(train_dataset);
 
     let val_loader = DataLoaderBuilder::new(batcher_val)
-        .batch_size(16)
+        .batch_size(BATCH_SIZE)
         .build(val_dataset); // Validación usualmente no se baraja
 
     Ok((train_loader, val_loader))
