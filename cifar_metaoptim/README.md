@@ -1,0 +1,1 @@
+La documentación de optirs-nas no permite integrar un ejemplo de uso completo.  Gemini genera código inconsistente.

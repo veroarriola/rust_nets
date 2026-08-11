@@ -6,6 +6,7 @@ use optirs_nas::{
     ArchitectureSpace, SearchSpace, ReinforcementLearningNAS, NASController
 };
 
+
 /// 1. PREPARACIÓN DEL DATASET
 /// Escanea tu directorio "cifar10_images" (o mnist) y prepara las rutas o tensores.
 fn load_dataset_metadata(dir_path: &str) -> Vec<String> {
@@ -26,6 +27,7 @@ fn load_dataset_metadata(dir_path: &str) -> Vec<String> {
 
 /// 2. DEFINICIÓN Y EVALUACIÓN DEL MODELO
 /// Esta función recibe los parámetros sugeridos por OptiRS-NAS en la iteración actual
+/*
 fn train_and_evaluate_model(
     _image_paths: &[String],
     layers: Vec<String>,
@@ -53,11 +55,12 @@ fn train_and_evaluate_model(
              
     final_acc // Retornamos la precisión (métrica a maximizar)
 }
+    */
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Cargamos los metadatos de tus imágenes
-    let dataset_dir = "cifar10_images";
+    let dataset_dir = "../cifar_rust/cifar10_images";
     let dataset_paths = load_dataset_metadata(dataset_dir);
 
     if dataset_paths.is_empty() {
@@ -65,18 +68,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Configurar el espacio de búsqueda de arqquitectura (NAS)
+    let arch_space = ArchitectureSpace::new()
+        .add_layer_types(&["conv2d", "depthwise_conv2d", "separable_conv2d", "attention"])
+        .add_kernel_sizes(&[3, 5, 7])
+        .add_channel_sizes(&[32, 64, 128, 256]);
+
     // 3. CONFIGURAR EL ESPACIO DE BÚSQUEDA DE HIPERPARÁMETROS
     let hp_space = SearchSpace::new()
         .add_continuous("learning_rate", 1e-5, 1e-2)
         .add_discrete("batch_size", &[16, 32, 64, 128])
         .add_categorical("optimizer", &["adamw", "sgd"]);
 
-    // 4. CONFIGURAR EL ESPACIO DE BÚSQUEDA DE ARQUITECTURA (NAS)
-    // Definimos los bloques de construcción que el algoritmo puede usar
-    let arch_space = ArchitectureSpace::new()
-        .add_layer_types(&["conv2d", "depthwise_conv2d", "separable_conv2d", "attention"])
-        .add_kernel_sizes(&[3, 5, 7])
-        .add_channel_sizes(&[32, 64, 128, 256]);
+    
 
     // 5. INICIALIZAR EL CONTROLADOR NAS BASADO EN APRENDIZAJE POR REFUERZO
     // ReinforcementLearningNAS usa una red controladora interna para "predecir" 

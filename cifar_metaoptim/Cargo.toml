@@ -5,9 +5,13 @@ edition = "2024"
 
 [dependencies]
 # Stack de OptiRS para optimización y NAS
-optirs-nas = { version = "0.3.1", features = ["bayesian", "reinforcement", "multi_objective"] }
+optirs-nas = { version = "0.3.1", features = ["reinforcement", "progressive", "multi_objective"] }
 optirs-core = "0.3.1"
-scirs2-core = "0.6.2"
+scirs2-core = "0.4.0"
+scirs2-optimize = "0.4.0"
+
+# Optional: GPU acceleration
+optirs-gpu = { version = "0.3.1", optional = true }
 
 # Manejo de archivos e imágenes
 image = "0.25.10"

@@ -3,20 +3,20 @@ use iced::widget::{button, combo_box, column, container, progress_bar, row, scro
 use iced::color;
 use iced::widget::text::Style as TextStyle; // Opcional, para el lambda
 use iced::widget::container::Style as ContainerStyle; // Opcional, para el fondo
+use iced::{window};
+use iced::window::icon;
+use iced::futures::SinkExt; // Necesario para hacer output.send(...).await
 
 use strum::IntoEnumIterator; 
 
 use crate::iris_dataset::{IrisClass, IrisDataset};
-use crate::burn_perceptron::{FromWorker, ToWorker, TrainingConfig, WorkerEvent, worker_loop};
+use crate::training_worker::{FromWorker, ToWorker, TrainingConfig, WorkerEvent, worker_loop};
 
 mod iris_dataset;
 mod rerun_plotter;
 mod burn_perceptron;
+mod training_worker;
 
-use iced::{window};
-use iced::window::icon;
-
-use iced::futures::SinkExt; // Necesario para hacer output.send(...).await
 
 
 fn cargar_icono() -> icon::Icon {
