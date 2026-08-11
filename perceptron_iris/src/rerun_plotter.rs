@@ -102,7 +102,7 @@ fn plot_2_characteristics(
 }
 
 
-pub fn plot_dataset(rec: &RecordingStream, ds: &IrisDataset, rerun_time: f32) -> Result<(), Box<dyn Error>> {
+pub fn plot_dataset(rec: &RecordingStream, ds: &IrisDataset, rerun_time: i64) -> Result<(), Box<dyn Error>> {
 
     let df = &ds.original_df;
     println!("AFTER: {df}");
@@ -115,7 +115,8 @@ pub fn plot_dataset(rec: &RecordingStream, ds: &IrisDataset, rerun_time: f32) ->
     ];
 
     // 4. Procesar y graficar
-    rec.set_duration_secs("stable_time", rerun_time);
+    //rec.set_duration_secs("stable_time", rerun_time);
+    rec.set_time_sequence("stable_time", rerun_time);
     plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "petal_width").expect("Problem while plotting feature pairs to ReRun");
     plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "sepal_length").expect("Problem while plotting feature pairs to ReRun");
     plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "sepal_width").expect("Problem while plotting feature pairs to ReRun");
@@ -127,7 +128,7 @@ pub fn plot_dataset(rec: &RecordingStream, ds: &IrisDataset, rerun_time: f32) ->
 
 }
 
-pub fn plot_dataset_with_target(rec: &RecordingStream, ds: &IrisDataset, target_class: IrisClass, rerun_time: f32) -> Result<(), Box<dyn Error>> {
+pub fn plot_dataset_with_target(rec: &RecordingStream, ds: &IrisDataset, target_class: IrisClass, rerun_time: i64) -> Result<(), Box<dyn Error>> {
 
     let df = &ds.original_df;
     println!("AFTER: {df}");
@@ -140,7 +141,8 @@ pub fn plot_dataset_with_target(rec: &RecordingStream, ds: &IrisDataset, target_
     ];
 
     // 4. Procesar y graficar
-    rec.set_duration_secs("stable_time", rerun_time);
+    //rec.set_duration_secs("stable_time", rerun_time);
+    rec.set_time_sequence("stable_time", rerun_time);
     plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "petal_width").expect("Problem while plotting feature pairs to ReRun");
     plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "sepal_length").expect("Problem while plotting feature pairs to ReRun");
     plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "sepal_width").expect("Problem while plotting feature pairs to ReRun");

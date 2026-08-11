@@ -183,6 +183,8 @@ impl PerceptronExperimenter {
                         seed,
                         lr,
                         target_epochs: epochs,
+                        current_epoch: self.current_epoch,
+                        current_batch: self.current_batch,
                         //validation_interval: 2, // Aquí asignas tu intervalo de validación
                     };
 
