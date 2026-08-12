@@ -9,6 +9,9 @@ use crate::training_worker::MyBackend;
 
 use std::error::Error;
 
+const POINT_RADIUS: f32 = 0.03;
+const MARKER_SIZE: f32 = 0.1;
+
 /// Convierte una lista de coordenadas (x, y) en las líneas que forman un "Tache" (X)
 fn generar_taches(puntos: &[(f32, f32)], tamano: f32) -> Vec<Vec<(f32, f32)>> {
     let mut strips = Vec::new();
@@ -98,7 +101,7 @@ fn plot_2_characteristics(
             format!("dataset/{} (cm) vs {} (cm)/{}", feature_1_name, feature_2_name, species_name),
             &Points2D::new(features_points)
                 .with_colors([*color])
-                .with_radii([0.05]),
+                .with_radii([POINT_RADIUS]),
         )?;
     }
 
@@ -295,7 +298,7 @@ impl ClassificationPlotter {
         target_name: &str,
     ) {
         let num_features = labels.len();
-        let size = 0.1;
+        let size = MARKER_SIZE;
 
         // Iteramos para generar los 6 pares únicos: (0,1), (0,2), (0,3), (1,2), (1,3), (2,3)
         for i in 0..num_features {
