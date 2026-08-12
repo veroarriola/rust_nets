@@ -21,7 +21,11 @@ use burn::train::InferenceStep;
 use burn::backend::{Wgpu, wgpu::WgpuDevice, Autodiff};
 use burn::optim::Optimizer;
 use burn::optim::adaptor::OptimizerAdaptor;
-use crate::iris_dataset::BATCH_SIZE;
+use crate::iris_dataset::{
+    BATCH_SIZE,
+    CHECKPOINT_INTERVAL,
+    VALIDATION_INTERVAL,
+};
 
 /* Persistencia */
 use std::fs;
@@ -139,6 +143,22 @@ impl Trainer {
     fn stop(&mut self) {
         self.train_data_loader = None;
         self.val_data_loader = None;
+    }
+
+    fn validate(&self) -> f32 {
+        if let Some(data_loader) = &self.val_data_loader {
+            let total_batches = data_loader.num_items();
+
+            let mut total_loss = 0.0;
+
+            for batch in data_loader.iter() {
+                let output = InferenceStep::step(&self.model, batch);
+                total_loss += output.loss.clone().into_data().to_vec::<f32>().unwrap()[0];
+            }
+            total_loss / total_batches as f32
+        } else {
+            panic!("Se intentó validar sin haber iniciado entrenamiento");
+        }
     }
 
     /*
@@ -322,6 +342,23 @@ pub async fn worker_loop(
                     loss: average_train_loss,
                 });
 
+
+                // Validación
+                if training_config.current_epoch % VALIDATION_INTERVAL == 0 {
+                    let val_error = trainer.validate();
+                    println!("     Validation error = {:.4}", val_error);
+
+                    if let Some(rec) = &trainer.rec {
+                        let loss_path = format!(
+                            "metrics/target_{}/lr_{}/seed_{}/loss_val",
+                            training_config.target_class.target_name(),
+                            training_config.lr,
+                            training_config.seed,
+                        );
+                        let _ = rec.log(loss_path, &rerun::Scalars::new([val_error as f64]));
+                    }
+                }
+
                 // --- INTEGRACIÓN CON RERUN E ICED ---
                 // Aquí tienes acceso directo al modelo en cada época
                 // Puedes extraer los pesos y el sesgo sin pelear con el Learner:
@@ -329,8 +366,6 @@ pub async fn worker_loop(
                 //let pesos = trainer.model.linear.weight.val().into_data().convert::<f32>().value;
                 //let sesgo = trainer.model.linear.bias.unwrap().val().into_data().convert::<f32>().value;
                 
-                // Le envías los datos frescos a tu hilo principal para graficar:
-                // let _ = tx.send(FromWorker::EpochUpdate { epoch, pesos, sesgo });
             }
             
             trainer.stop();

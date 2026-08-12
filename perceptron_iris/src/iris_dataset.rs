@@ -16,6 +16,8 @@ use burn::data::dataloader::DataLoader;
 
 pub const DATASET_SOURCE_FILE: &str = "data/iris.data";
 pub const BATCH_SIZE: usize = 16;
+pub const VALIDATION_INTERVAL: usize = 5;
+pub const CHECKPOINT_INTERVAL: usize = 5;
 
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, EnumIter, Deserialize, Serialize)]
