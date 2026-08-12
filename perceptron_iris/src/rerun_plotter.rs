@@ -1,6 +1,11 @@
-use rerun::{Color, LineStrips2D, Points2D, RecordingStream};
+use rerun::{Clear, Color, LineStrips2D, Points2D, RecordingStream};
 use polars::prelude::*;
-use crate::iris_dataset::{IrisClass, IrisDataset};
+use crate::iris_dataset::{IrisClass, IrisDataset, Feature, FEATURE_LABELS};
+
+use burn::tensor::Tensor;
+use burn::tensor::backend::Backend;
+use burn::train::ClassificationOutput;
+use crate::training_worker::MyBackend;
 
 use std::error::Error;
 
@@ -117,15 +122,16 @@ pub fn plot_dataset(rec: &RecordingStream, ds: &IrisDataset, rerun_time: i64) ->
     // 4. Procesar y graficar
     //rec.set_duration_secs("stable_time", rerun_time);
     rec.set_time_sequence("stable_time", rerun_time);
-    plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "petal_width").expect("Problem while plotting feature pairs to ReRun");
-    plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "sepal_length").expect("Problem while plotting feature pairs to ReRun");
-    plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "sepal_width").expect("Problem while plotting feature pairs to ReRun");
-    plot_2_characteristics(&rec, &df, &species_colors, "petal_width", "sepal_length").expect("Problem while plotting feature pairs to ReRun");
-    plot_2_characteristics(&rec, &df, &species_colors, "petal_width", "sepal_width").expect("Problem while plotting feature pairs to ReRun");
-    plot_2_characteristics(&rec, &df, &species_colors, "sepal_length", "sepal_width").expect("Problem while plotting feature pairs to ReRun");
+    let num_features = FEATURE_LABELS.len();
+    for i in 0..num_features {
+        for j in (i + 1)..num_features {
+            let label_x = FEATURE_LABELS[i];
+            let label_y = FEATURE_LABELS[j];
+            plot_2_characteristics(&rec, &df, &species_colors, label_x, label_y).expect("Problem while plotting feature pairs to ReRun");
+        }
+    }
 
     Ok(())
-
 }
 
 pub fn plot_dataset_with_target(rec: &RecordingStream, ds: &IrisDataset, target_class: IrisClass, rerun_time: i64) -> Result<(), Box<dyn Error>> {
@@ -143,13 +149,194 @@ pub fn plot_dataset_with_target(rec: &RecordingStream, ds: &IrisDataset, target_
     // 4. Procesar y graficar
     //rec.set_duration_secs("stable_time", rerun_time);
     rec.set_time_sequence("stable_time", rerun_time);
-    plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "petal_width").expect("Problem while plotting feature pairs to ReRun");
-    plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "sepal_length").expect("Problem while plotting feature pairs to ReRun");
-    plot_2_characteristics(&rec, &df, &species_colors, "petal_length", "sepal_width").expect("Problem while plotting feature pairs to ReRun");
-    plot_2_characteristics(&rec, &df, &species_colors, "petal_width", "sepal_length").expect("Problem while plotting feature pairs to ReRun");
-    plot_2_characteristics(&rec, &df, &species_colors, "petal_width", "sepal_width").expect("Problem while plotting feature pairs to ReRun");
-    plot_2_characteristics(&rec, &df, &species_colors, "sepal_length", "sepal_width").expect("Problem while plotting feature pairs to ReRun");
+    let num_features = FEATURE_LABELS.len();
+    for i in 0..num_features {
+        for j in (i + 1)..num_features {
+            let label_x = FEATURE_LABELS[i];
+            let label_y = FEATURE_LABELS[j];
+            plot_2_characteristics(&rec, &df, &species_colors, label_x, label_y).expect("Problem while plotting feature pairs to ReRun");
+        }
+    }
 
     Ok(())
+}
 
+pub fn pairwise_plot_classification_batch(
+    rec: &rerun::RecordingStream, 
+    output: &ClassificationOutput<MyBackend>,
+    inputs: &Tensor<MyBackend, 2>,
+    target_name: &str,
+    feature_1_name: &str,
+    feature_2_name: &str,
+) {
+    let idx_x = Feature::from_str(feature_1_name).index();  // <--- Índice para el eje X
+    let idx_y = Feature::from_str(feature_2_name).index();  // <--- Índice para el eje Y
+
+    // 1. Extraer los datos
+    let preds_data = output.output.clone().into_data();
+    let preds: &[f32] = preds_data.as_slice::<f32>().unwrap();
+
+    let targets_data = output.targets.clone().into_data();
+    let targets: &[i32] = targets_data.as_slice::<i32>().unwrap();
+
+    let inputs_data = inputs.clone().into_data();
+    let features: &[f32] = inputs_data.as_slice::<f32>().unwrap();
+
+    let mut correct_points = Vec::new();
+    let mut incorrect_points = Vec::new();
+
+    let batch_size = preds.len();
+
+    // 2. Evaluar cada elemento usando los índices seleccionados
+    for i in 0..batch_size {
+        let pred_label = if preds[i] >= 0.5 { 1 } else { 0 };
+        let true_label = targets[i];
+        let is_correct = pred_label == true_label;
+
+        // Seleccionamos las características dinámicamente
+        let x = features[i * 4 + idx_x]; 
+        let y = features[i * 4 + idx_y]; 
+
+        if is_correct {
+            correct_points.push((x, y));
+        } else {
+            incorrect_points.push((x, y));
+        }
+    }
+
+    // 3. Generar las figuras
+    let size = 0.1;
+    let triangulos = generar_triangulos(&correct_points, size);
+    let taches = generar_taches(&incorrect_points, size);
+
+    // 4. Crear rutas dinámicas para Rerun
+    // Ejemplo: "dataset/0_vs_1/correcta"
+    let target_path = format!("dataset/{} (cm) vs {} (cm)/{}", feature_1_name, feature_2_name, target_name);
+
+    // 5. Graficar
+    if !triangulos.is_empty() {
+        rec.log(
+            target_path.clone(),
+            &LineStrips2D::new(triangulos)
+                .with_colors([Color::from_rgb(0, 255, 0)]),
+        ).unwrap();
+    }
+
+    if !taches.is_empty() {
+        rec.log(
+            target_path,
+            &LineStrips2D::new(taches)
+                .with_colors([Color::from_rgb(255, 0, 0)]),
+        ).unwrap();
+    }
+}
+
+pub fn plot_classification_batch(rec: &RecordingStream, output: &ClassificationOutput<MyBackend>, inputs: &Tensor<MyBackend, 2>, target_class: IrisClass) {
+    let binding = target_class.target_name();
+    let target_name = binding.as_str();
+    let num_features = FEATURE_LABELS.len();
+    for i in 0..num_features {
+        for j in (i + 1)..num_features {
+            let label_x = FEATURE_LABELS[i];
+            let label_y = FEATURE_LABELS[j];
+            pairwise_plot_classification_batch(rec, &output, &inputs, &target_name, label_x, label_y);
+        }
+    }
+}
+
+
+
+pub struct ClassificationPlotter {
+    epoch_features: Vec<f32>, // Guardará TODAS las dimensiones aplanadas
+    epoch_is_correct: Vec<bool>, // Guardará si el modelo atinó o no
+}
+
+impl ClassificationPlotter {
+    pub fn new() -> Self {
+        let epoch_features = Vec::new();
+        let epoch_is_correct = Vec::new();
+        Self {
+            epoch_features,
+            epoch_is_correct,
+        }
+    }
+
+    pub fn accumulate_batch<B: Backend>(
+        &mut self,
+        output: &ClassificationOutput<B>,
+        inputs: &Tensor<B, 2>,
+    ) {
+        let preds_data = output.output.clone().into_data();
+        let preds: &[f32] = preds_data.as_slice::<f32>().unwrap();
+
+        let targets_data = output.targets.clone().into_data();
+        let targets: &[i32] = targets_data.as_slice::<i32>().unwrap(); 
+
+        let inputs_data = inputs.clone().into_data();
+        let features_slice: &[f32] = inputs_data.as_slice::<f32>().unwrap();
+
+        let batch_size = preds.len();
+
+        // 1. Guardamos todos los features del lote tal cual (copia rápida en RAM)
+        self.epoch_features.extend_from_slice(features_slice);
+
+        // 2. Evaluamos la corrección de cada elemento y lo guardamos
+        for i in 0..batch_size {
+            let pred_label = if preds[i] >= 0.5 { 1 } else { 0 };
+            let is_correct = pred_label == targets[i];
+            self.epoch_is_correct.push(is_correct);
+        }
+    }
+
+    pub fn plot_combinations(
+        &mut self,
+        rec: &rerun::RecordingStream,
+        labels: &[&str; 4], // Tus 4 etiquetas (ej: ["sepal_length", ...])
+        target_name: &str,
+    ) {
+        let num_features = labels.len();
+        let size = 0.1;
+
+        // Iteramos para generar los 6 pares únicos: (0,1), (0,2), (0,3), (1,2), (1,3), (2,3)
+        for i in 0..num_features {
+            for j in (i + 1)..num_features {
+                let mut correct_points = Vec::new();
+                let mut incorrect_points = Vec::new();
+
+                // Clasificamos los puntos para este par específico (i vs j)
+                for (idx, &correct) in self.epoch_is_correct.iter().enumerate() {
+                    let x = self.epoch_features[idx * num_features + i];
+                    let y = self.epoch_features[idx * num_features + j];
+
+                    if correct {
+                        correct_points.push((x, y));
+                    } else {
+                        incorrect_points.push((x, y));
+                    }
+                }
+
+                // Construimos las rutas de Rerun usando tus etiquetas de texto
+                let label_x = labels[i];
+                let label_y = labels[j];
+                let path_correcta = format!("dataset/{} (cm) vs {} (cm)/correct/{}", label_x, label_y, target_name);
+                let path_incorrecta = format!("dataset/{} (cm) vs {} (cm)/incorrect/{}", label_x, label_y, target_name);
+
+                // Aciertos
+                let triangles = generar_triangulos(&correct_points, size);
+                if triangles.is_empty() {
+                    rec.log(path_correcta.clone(), &Clear::flat()).unwrap();
+                } else {
+                    rec.log(path_correcta.clone(), &LineStrips2D::new(triangles).with_colors([Color::from_rgb(0, 255, 0)])).unwrap();
+                }
+
+                // Errores
+                let crosses = generar_taches(&incorrect_points, size);
+                if crosses.is_empty() {
+                    rec.log(path_incorrecta.clone(), &Clear::flat()).unwrap();
+                } else {
+                    rec.log(path_incorrecta.clone(), &LineStrips2D::new(crosses).with_colors([Color::from_rgb(255, 0, 0)])).unwrap();
+                }
+            }
+        }
+    }
 }

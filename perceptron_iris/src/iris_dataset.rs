@@ -16,7 +16,7 @@ use burn::data::dataloader::DataLoader;
 
 pub const DATASET_SOURCE_FILE: &str = "data/iris.data";
 pub const BATCH_SIZE: usize = 16;
-pub const VALIDATION_INTERVAL: usize = 5;
+pub const VALIDATION_INTERVAL: usize = 1;
 pub const CHECKPOINT_INTERVAL: usize = 5;
 
 
@@ -47,6 +47,40 @@ impl IrisClass {
         }
     }
 }
+
+/* 
+ * Caracterísiticas
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Feature {
+    SepalLength = 0,
+    SepalWidth = 1,
+    PetalLength = 2,
+    PetalWidth = 3,
+}
+
+impl Feature {
+    pub fn from_str(name: &str) -> Self {
+        match name {
+            "sepal_length" => Self::SepalLength,
+            "sepal_width"  => Self::SepalWidth,
+            "petal_length" => Self::PetalLength,
+            "petal_width"  => Self::PetalWidth,
+            _ => panic!("Característica desconocida: '{name}'"),
+        }
+    }
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+pub const FEATURE_LABELS: [&str; 4] = [
+    "sepal_length", 
+    "sepal_width", 
+    "petal_length", 
+    "petal_width"
+];
 
 
 /*

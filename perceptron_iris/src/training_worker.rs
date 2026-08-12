@@ -11,6 +11,7 @@ use crate::iris_dataset::{IrisBatch, IrisClass, IrisDataset};
 /* Visualización */
 use rerun::RecordingStream;
 use crate::rerun_plotter;
+use crate::rerun_plotter::ClassificationPlotter;
 
 /* Modelo */
 use crate::burn_perceptron::Perceptron;
@@ -84,7 +85,7 @@ pub struct TrainingConfig {
 
 
 // Definimos el Backend con Autodiff para entrenamiento en GPU
-type MyBackend = Autodiff<Wgpu>;
+pub type MyBackend = Autodiff<Wgpu>;
 
 pub type MyOptimizer = OptimizerAdaptor<
     burn::optim::Adam,
@@ -105,6 +106,8 @@ struct Trainer {
 
     train_data_loader: Option<Arc<dyn DataLoader<MyBackend, IrisBatch<MyBackend>>>>,
     val_data_loader: Option<Arc<dyn DataLoader<MyBackend, IrisBatch<MyBackend>>>>,
+
+    plot_at_start: bool,
 }
 
 impl Trainer {
@@ -123,6 +126,8 @@ impl Trainer {
             
             train_data_loader: None,
             val_data_loader: None,
+
+            plot_at_start: true,
         }
     }
 
@@ -135,7 +140,10 @@ impl Trainer {
             self.train_data_loader = Some(train_data_loader);
             self.val_data_loader = Some(val_data_loader);
         }
-            
+        
+        if self.plot_at_start {
+            self.plot_dataset_with_target(training_config.target_class);
+        }
         // Aquí podrías reiniciar el optimizador si es necesario
         // self.optim = burn::optim::AdamConfig::new().init::<MyBackend, Perceptron<MyBackend>>();
     }
@@ -229,10 +237,37 @@ impl Trainer {
                     println!("⚠️ Fallo al graficar datos con clase objetivo: {}", e);
                 }
                 self.rerun_time += 1;
+                self.plot_at_start = false;
             }
         }
     }
+
+    fn plot_current_classification_status(&mut self, target_class: IrisClass) {
+        if let Some(rec) = &self.rec {
+            let mut plotter = ClassificationPlotter::new();
+
+            if let Some(train_data_loader) = &self.train_data_loader {
+                for batch in train_data_loader.iter() {
+                    // Hacemos una copia superficial del handle de inputs (ultrarrápida y sin costo de RAM/GPU)
+                    let inputs = batch.inputs.clone();
+                    let output = InferenceStep::step(&self.model, batch);
+                    plotter.accumulate_batch(&output, &inputs);
+                }
+            }
+            if let Some(val_data_loader) = &self.val_data_loader {
+                for batch in val_data_loader.iter() {
+                    let inputs = batch.inputs.clone();
+                    let output = InferenceStep::step(&self.model, batch);
+                    plotter.accumulate_batch(&output, &inputs);
+                }
+            }
+            plotter.plot_combinations(&rec, &iris_dataset::FEATURE_LABELS, &target_class.target_name());
+            self.rerun_time += 1;
+        }
+    }
 }
+
+
 
 pub async fn worker_loop(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<ToWorker>,
@@ -357,6 +392,8 @@ pub async fn worker_loop(
                         );
                         let _ = rec.log(loss_path, &rerun::Scalars::new([val_error as f64]));
                     }
+
+                    trainer.plot_current_classification_status(training_config.target_class);
                 }
 
                 // --- INTEGRACIÓN CON RERUN E ICED ---
