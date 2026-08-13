@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 # El núcleo de Burn y su backend de GPU
-burn = { version = "0.21", features = ["train", "wgpu"] }
+burn = { version = "0.21", features = ["train", "wgpu", "store"] }
 
 csv = "1.4.0"
 

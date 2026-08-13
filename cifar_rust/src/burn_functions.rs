@@ -15,7 +15,7 @@ use burn::data::dataloader::DataLoader;
 
 use crate::training_state::{ToWorker, TrainingMeta, FromWorker, WorkerConfig};
 use crate::cifar_data::{CifarBatcher, load_cifar_folder, CifarBatch};
-use crate::cifar_net::{Model};
+use crate::cifar_net::{Model, ModelConfig};
 
 use crate::cifar_data::{
     BATCH_SIZE,
@@ -62,7 +62,7 @@ impl TrainingState {
 
     fn init_model(&mut self) {
         MyBackend::seed(&self.device, self.current_seed);
-        self.model = Some(Model::<MyBackend>::new(&self.device));
+        self.model = Some(ModelConfig::new_cifar10(vec![1024, 512]).init::<MyBackend>(&self.device));
         self.optimizador = Some(AdamConfig::new().init());
         self.current_epoch = 0;
     }
@@ -98,7 +98,7 @@ impl TrainingState {
             .load(format!("{}/model", path).into(), &self.device)
             .expect("No se pudieron cargar los pesos");
 
-        self.model = Some(Model::<MyBackend>::new(&self.device).load_record(model_record));
+        self.model = Some(ModelConfig::new_cifar10(vec![1024, 512]).init::<MyBackend>(&self.device).load_record(model_record));
 
         // Cargar Optimizador (Restauramos momentum m, varianza v y contador t)
         let optim_record = recorder
@@ -456,7 +456,7 @@ pub fn worker_loop(
                         // Tomamos la referencia del modelo
                         let m = training_state.model.as_ref().unwrap();
 
-                        for (nombre_capa, tensor_pesos) in m.obtener_pesos() {
+                        for (nombre_capa, tensor_pesos) in m.read_weights() {
                             // Extraemos los pesos de la capa. Ej: capa 1 (shape: [1024, 3072])
                             // Usamos inner() para obtener el backend Wgpu puro sin capa Autodiff
                             let data_pesos = tensor_pesos.clone().inner().into_data().to_vec::<f32>().unwrap();
