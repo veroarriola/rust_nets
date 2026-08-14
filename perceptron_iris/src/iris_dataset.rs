@@ -1,6 +1,8 @@
 use polars::prelude::*;
 //use std::error::Error;
 
+use strum::EnumCount;
+use strum_macros::EnumCount as EnumCountMacro;  // Se renombra para evitar conflictos de nombres
 use strum_macros::EnumIter;
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +12,6 @@ use burn::data::{dataloader::batcher::Batcher, dataset::InMemDataset};
 use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
 use burn::data::dataloader::DataLoaderBuilder;
 use std::sync::Arc;
-use std::marker::PhantomData;
 
 use burn::data::dataloader::DataLoader;
 
@@ -22,9 +23,9 @@ pub const CHECKPOINT_INTERVAL: usize = 5;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, EnumIter, Deserialize, Serialize)]
 pub enum IrisClass {
-    Setosa,
-    Versicolour,
-    Virginica,
+    Setosa = 0,
+    Versicolour = 1,
+    Virginica = 2,
 }
 
 impl std::fmt::Display for IrisClass {
@@ -51,7 +52,7 @@ impl IrisClass {
 /* 
  * Caracterísiticas
  */
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumCountMacro)]
 pub enum Feature {
     SepalLength = 0,
     SepalWidth = 1,
@@ -75,7 +76,7 @@ impl Feature {
     }
 }
 
-pub const FEATURE_LABELS: [&str; 4] = [
+pub const FEATURE_LABELS: [&str; Feature::COUNT] = [
     "sepal_length", 
     "sepal_width", 
     "petal_length", 
@@ -179,22 +180,15 @@ pub struct IrisBatch<B: Backend> {
     pub targets: Tensor<B, 1, Int>, 
 }
 
-pub struct IrisBatcher<B: Backend> {
-    _marker: PhantomData<B>,
-}
-
-impl<B: Backend> IrisBatcher<B> {
-    pub fn new() -> Self {
-        Self { _marker: PhantomData }
-    }
-}
+#[derive(Clone, Default)]
+pub struct IrisBatcher {}
 
 // El trait Batcher define cómo convertir un Vec<IrisItem> en un IrisBatch}
-impl<B: Backend> Batcher<B, IrisItem, IrisBatch<B>> for IrisBatcher<B> {
+impl<B: Backend> Batcher<B, IrisItem, IrisBatch<B>> for IrisBatcher {
     fn batch(&self, items: Vec<IrisItem>, device: &B::Device) -> IrisBatch<B> {
         let batch_size = items.len();
         
-        let mut features_vec = Vec::with_capacity(batch_size * 4);
+        let mut features_vec = Vec::with_capacity(batch_size * Feature::COUNT);
         let mut targets_vec = Vec::with_capacity(batch_size);
 
         for item in items {
@@ -202,16 +196,11 @@ impl<B: Backend> Batcher<B, IrisItem, IrisBatch<B>> for IrisBatcher<B> {
             targets_vec.push(item.label);
         }
 
-        let features = Tensor::from_data(TensorData::new(features_vec, [batch_size, 4]), device);
-        //let targets = Tensor::from_data(TensorData::new(targets_vec, [batch_size]), &self.device);
+        let features = Tensor::from_data(TensorData::new(features_vec, [batch_size, Feature::COUNT]), device);
         let targets = Tensor::<B, 1, burn::tensor::Int>::from_data(
             TensorData::new(targets_vec, [batch_size]),
             device,
         );
-        /*let targets = Tensor::<B, 1, burn::tensor::Int>::from_data(
-            TensorData::new(targets_vec, [batch_size]),
-            device,
-        );*/
 
         IrisBatch { inputs: features, targets }
     }
@@ -237,8 +226,8 @@ pub fn build_dataloaders<B: Backend>(
     let val_dataset = InMemDataset::new(val_items.to_vec());
 
     // Construir los DataLoaders
-    let batcher_train = IrisBatcher::<B>::new();
-    let batcher_val = IrisBatcher::<B>::new();
+    let batcher_train = IrisBatcher::new();
+    let batcher_val = IrisBatcher::new();
 
     let train_loader = DataLoaderBuilder::new(batcher_train)
         .batch_size(BATCH_SIZE)

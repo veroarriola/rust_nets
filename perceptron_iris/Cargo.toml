@@ -15,6 +15,7 @@ iced = "0.14.0"
 # Utilidades para manejar imágenes
 image = "0.25.10"
 
+# Para manipulación y filtrado de datos
 polars = { version = "0.38", features = ["lazy", "csv"] }
 
 rand = "0.10.2"
@@ -25,8 +26,9 @@ rerun = "0.35.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# Para obtener dinámicamente el número de elementos en un enum e iterar sobre ellos
 strum = "0.28.0"
 strum_macros = "0.28.0"
 
-
+# Manejo de hilos para operar la UGI y el entrenamiento
 tokio = { version = "1.53", features = ["sync", "rt"] }
