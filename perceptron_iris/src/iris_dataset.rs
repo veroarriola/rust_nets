@@ -226,8 +226,8 @@ pub fn build_dataloaders<B: Backend>(
     let val_dataset = InMemDataset::new(val_items.to_vec());
 
     // Construir los DataLoaders
-    let batcher_train = IrisBatcher::new();
-    let batcher_val = IrisBatcher::new();
+    let batcher_train = IrisBatcher::default();
+    let batcher_val = IrisBatcher::default();
 
     let train_loader = DataLoaderBuilder::new(batcher_train)
         .batch_size(BATCH_SIZE)
