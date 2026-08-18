@@ -82,6 +82,7 @@ pub struct TrainingConfig {
     pub current_epoch: usize,
     pub current_batch: usize,
     //pub validation_interval: usize,
+    pub save_checkpoints: bool,
 }
 
 
@@ -197,8 +198,28 @@ impl Trainer {
         }
     }
 
-    fn load_checkpoint(&mut self) {
+    fn load_checkpoint(&mut self, path: String) -> TrainingConfig {
+        println!("Cargando punto de control desde: {}", path);
+
+        let meta_str = fs::read_to_string(format!("{}/meta.json", path))
+            .expect("No se encontró meta.json en el punto de control");
+        let meta: TrainingConfig = serde_json::from_str(&meta_str).unwrap();
         
+        // Cargar Modelo
+        let recorder = CompactRecorder::new();
+        let model_record = recorder
+            .load(format!("{}/model", path).into(), &self.device)
+            .expect("No se pudieron cargar los pesos");
+
+        self.model = Some(Perceptron::new(&self.device)).load_record(model_record);
+
+        // Cargar Optimizador (Restauramos momentum m, varianza v y contador t)
+        let optim_record = recorder
+            .load(format!("{}/optim", path).into(), &self.device)
+            .expect("No se pudo cargar el estado del optimizador");
+        self.optimizer = burn::optim::AdamConfig::new().init().load_record(optim_record);
+
+        return meta;
     }
 
     fn save_checkpoint(&mut self, training_config: &TrainingConfig) -> String {
@@ -209,7 +230,7 @@ impl Trainer {
             training_config.lr,
             training_config.seed,
             training_config.current_epoch);
-        fs::create_dir_all(&dir_path).expect("Fallo al crear directorio de checkpoint");
+        fs::create_dir_all(&dir_path).expect("Fallo al crear directorio para puntos de control");
 
         let recorder = CompactRecorder::new();
 
@@ -422,6 +443,10 @@ pub async fn worker_loop(
                     }
 
                     trainer.plot_current_classification_status(&training_config);
+                }
+
+                if training_config.save_checkpoints && training_config.current_epoch % CHECKPOINT_INTERVAL == 0 {
+                    trainer.save_checkpoint(&training_config);
                 }
 
                 // --- INTEGRACIÓN CON RERUN E ICED ---

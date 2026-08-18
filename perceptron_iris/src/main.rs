@@ -1,5 +1,12 @@
 use iced::{Task, Element, Theme, Length, Color};
-use iced::widget::{button, combo_box, column, container, progress_bar, row, scrollable, Space, text, text_input};
+use iced::widget::{
+    button,
+    checkbox, combo_box, column, container,
+    progress_bar,
+    row,
+    scrollable, Space,
+    text, text_input
+};
 use iced::color;
 use iced::widget::text::Style as TextStyle; // Opcional, para el lambda
 use iced::widget::container::Style as ContainerStyle; // Opcional, para el fondo
@@ -50,6 +57,7 @@ pub enum UiMessage {
     WindowCloseRequested,
     BtnLoadCheckpointPressed,
     CheckpointSelected(Option<String>), // Option porque el usuario puede cancelar la ventana
+    ToggleSaveCheckpoints(bool),
     WorkerStatusChanged(WorkerEvent),
 }
 
@@ -79,6 +87,7 @@ pub struct PerceptronExperimenter {
     current_loss: f32,
     current_batch: usize,
     total_batches: usize,
+    save_checkpoints: bool,
     checkpoints_disponibles: Vec<String>,
 
     // El transmisor para enviarle comandos (Pausa, Iniciar) al hilo de Burn
@@ -104,6 +113,8 @@ impl PerceptronExperimenter {
                 current_loss: 0.0,
                 current_batch: 0,
                 total_batches: 0,
+
+                save_checkpoints: false,
                 checkpoints_disponibles: vec![],
 
                 worker_tx: None, // Se conectará al iniciar
@@ -151,7 +162,10 @@ impl PerceptronExperimenter {
                 Task::none()
             }
 
-            
+            UiMessage::ToggleSaveCheckpoints(value) => {
+                self.save_checkpoints = value;
+                Task::none()
+            }
             UiMessage::BtnLoadCheckpointPressed => todo!(),
             UiMessage::CheckpointSelected(Some(path)) => {
                 if let Some(tx) = &self.worker_tx {
@@ -187,6 +201,7 @@ impl PerceptronExperimenter {
                         current_epoch: self.current_epoch,
                         current_batch: self.current_batch,
                         //validation_interval: 2, // Aquí asignas tu intervalo de validación
+                        save_checkpoints: self.save_checkpoints,
                     };
 
                     // 2. Lo pasamos como parámetro a la variante Start
@@ -321,6 +336,8 @@ impl PerceptronExperimenter {
             text_input("Ej: 0.001", &self.input_lr).on_input(UiMessage::InputLrChanged),
             text("Épocas de la serie:"),
             text_input("Ej: 10", &self.input_epochs).on_input(UiMessage::InputEpochsChanged),
+            text("Guardar pesos en puntos clave"),
+            checkbox(self.save_checkpoints).on_toggle(UiMessage::ToggleSaveCheckpoints),
         ].spacing(10).padding(20);
 
         let botones = match self.status {

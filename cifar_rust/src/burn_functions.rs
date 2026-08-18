@@ -80,10 +80,10 @@ impl TrainingState {
     }
 
     fn load_checkpoint(&mut self, path: String) -> TrainingMeta {
-        println!("Cargando checkpoint determinista desde: {}", path);
+        println!("Cargando punto de control desde: {}", path);
         
         let meta_str = fs::read_to_string(format!("{}/meta.json", path))
-            .expect("No se encontró meta.json en el checkpoint");
+            .expect("No se encontró meta.json en el punto de control");
         let meta: TrainingMeta = serde_json::from_str(&meta_str).unwrap();
 
         self.current_epoch = meta.epoch;
