@@ -1,5 +1,6 @@
 
 
+use burn::tensor::backend::Backend;
 /* Conjuntos de datos */
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -101,7 +102,8 @@ struct Trainer {
     // Conjunto de datos original (sin filtrar)
     original_dataset: Option<IrisDataset>,
     
-    model: Perceptron<MyBackend>,
+    device: WgpuDevice,
+    model: Option<Perceptron<MyBackend>>,
     optimizer: MyOptimizer,
 
     train_data_loader: Option<Arc<dyn DataLoader<MyBackend, IrisBatch<MyBackend>>>>,
@@ -119,7 +121,8 @@ impl Trainer {
             rerun_time: 0,
             original_dataset: None,
 
-            model: Perceptron::new(&device),
+            device: device.clone(),
+            model: None,
             //optim: burn::optim::SgdConfig::new()
             //    .init::<MyBackend, Perceptron<MyBackend>>(),
             optimizer: burn::optim::AdamConfig::new().init::<MyBackend, Perceptron<MyBackend>>(),
@@ -132,10 +135,16 @@ impl Trainer {
     }
 
     fn start(&mut self, training_config: &TrainingConfig) {
-        if self.train_data_loader.is_none() || self.val_data_loader.is_none() {
+        if self.train_data_loader.is_none() || self.val_data_loader.is_none() || self.model.is_none() {
+            MyBackend::seed(&self.device, training_config.seed);
+
+            self.model = Some(Perceptron::new(&self.device));
+
             let (train_data_loader, val_data_loader) = iris_dataset::build_dataloaders::<MyBackend>(
                 self.original_dataset.as_ref().unwrap().original_vec.clone(),
-                training_config.seed).unwrap(); // Aseguramos que el dataset original esté cargado
+                training_config.seed,
+                training_config.target_class,
+            ).unwrap(); // Aseguramos que el dataset original esté cargado
             
             self.train_data_loader = Some(train_data_loader);
             self.val_data_loader = Some(val_data_loader);
@@ -149,6 +158,9 @@ impl Trainer {
     }
 
     fn stop(&mut self) {
+        // Parece ser que no hace falta nada por ahora.
+        // Quiero conservar el estado del generador aleatorio y los datos, por si se ejecuta otra ronda con los mismos
+        self.model = None;
         self.train_data_loader = None;
         self.val_data_loader = None;
     }
@@ -160,7 +172,7 @@ impl Trainer {
             let mut total_loss = 0.0;
 
             for batch in data_loader.iter() {
-                let output = InferenceStep::step(&self.model, batch);
+                let output = InferenceStep::step(self.model.as_ref().expect("Ejecutando validación sin ejecutar Start"), batch);
                 total_loss += output.loss.clone().into_data().to_vec::<f32>().unwrap()[0];
             }
             total_loss / total_batches as f32
@@ -185,6 +197,10 @@ impl Trainer {
         }
     }
 
+    fn load_checkpoint(&mut self) {
+        
+    }
+
     fn save_checkpoint(&mut self, training_config: &TrainingConfig) -> String {
         // Incluimos semilla y learning rate en el nombre de la carpeta
         let dir_path = format!(
@@ -200,7 +216,7 @@ impl Trainer {
         // 1. Guardamos el Modelo
         recorder
             .record(
-                self.model.clone().into_record(),
+                self.model.as_ref().expect("Ejecutando save_checkpoint sin ejecutar Start").clone().into_record(),
                 format!("{}/model", dir_path).into(),
             )
             .expect("Fallo al guardar los pesos del modelo");
@@ -250,14 +266,14 @@ impl Trainer {
                 for batch in train_data_loader.iter() {
                     // Hacemos una copia superficial del handle de inputs (ultrarrápida y sin costo de RAM/GPU)
                     let inputs = batch.inputs.clone();
-                    let output = InferenceStep::step(&self.model, batch);
+                    let output = InferenceStep::step(self.model.as_ref().expect("Graficando sin ejecutar Start"), batch);
                     plotter.accumulate_batch(&output, &inputs);
                 }
             }
             if let Some(val_data_loader) = &self.val_data_loader {
                 for batch in val_data_loader.iter() {
                     let inputs = batch.inputs.clone();
-                    let output = InferenceStep::step(&self.model, batch);
+                    let output = InferenceStep::step(self.model.as_ref().expect("Graficando sin ejecutar Start"), batch);
                     plotter.accumulate_batch(&output, &inputs);
                 }
             }
@@ -289,6 +305,7 @@ pub async fn worker_loop(
     // Graficar conjunto de datos original
     trainer.plot_original_dataset();
 
+    let mut stop_training = false;
     while let Some(msg) = rx.recv().await {
         if let ToWorker::TargetSelected(target_class) = msg {
             println!("Trabajador recibió clase objetivo: {:?}", target_class);
@@ -301,7 +318,7 @@ pub async fn worker_loop(
         else if let ToWorker::Start(mut training_config) = msg {
             println!("Trabajador iniciando entrenamiento...");
             trainer.start(&training_config);  // Inicia el dataloader
-            let mut last_persisted_epoch = training_config.current_epoch;
+            //let mut last_persisted_epoch = training_config.current_epoch;
             
             // Bucle manual de épocas
             'epoch_loop: while training_config.current_epoch < training_config.target_epochs {
@@ -326,10 +343,12 @@ pub async fn worker_loop(
                             println!("Entrenamiento cancelado por el usuario.");
                             // Transmitimos estado actual para ser guardado en la IGU
                             let _ = tx.send(FromWorker::BatchProgress {
-                                epoch: last_persisted_epoch,
+                                //epoch: last_persisted_epoch,
+                                epoch: 0,
                                 current_batch: 0,
                                 total_batches,
                             });
+                            stop_training = true;
                             break 'epoch_loop; // Rompes el ciclo de entrenamiento
                         }
                         else if let ToWorker::Exit = msg {
@@ -340,10 +359,10 @@ pub async fn worker_loop(
                     }
                     
                     // grads, (output: loss, predictions, batch.targets)
-                    let output = TrainStep::step(&trainer.model, batch);
+                    let output = TrainStep::step(trainer.model.as_ref().expect("Entrenando sin ejecutar Start"), batch);
                     total_loss += output.item.loss.clone().into_data().to_vec::<f32>().unwrap()[0];
 
-                    trainer.model = trainer.optimizer.step(training_config.lr, trainer.model, output.grads);
+                    trainer.model = Some(trainer.optimizer.step(training_config.lr, trainer.model.expect("Entrenando sin iniciar."), output.grads));
 
                     let _ = tx.send(FromWorker::BatchProgress {
                         epoch: training_config.current_epoch,
@@ -404,8 +423,11 @@ pub async fn worker_loop(
                 //let sesgo = trainer.model.linear.bias.unwrap().val().into_data().convert::<f32>().value;
                 
             }
+            if stop_training {
+                trainer.stop();
+                stop_training = false;
+            }
             
-            trainer.stop();
             println!("Trabajador terminó entrenamiento.");
             let _ = tx.send(FromWorker::TrainingFinished);
         }

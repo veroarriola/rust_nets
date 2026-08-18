@@ -67,8 +67,6 @@ pub struct PerceptronExperimenter {
     target_classes: combo_box::State<IrisClass>,
     // Opción seleccionada actualmente
     target_class: Option<IrisClass>,
-    // Original dataset
-    original_dataset: Option<IrisDataset>,
     // Mensaje de error en caso de haberlo
     error_message: Option<String>,
     status_bar_message: Option<String>,
@@ -94,7 +92,7 @@ impl PerceptronExperimenter {
             Self {
                 target_classes: combo_box::State::new(all_target_classes),
                 target_class: Some(IrisClass::Setosa),
-                original_dataset: None,
+                //original_dataset: None,
                 error_message: None,
                 status_bar_message: None,
 

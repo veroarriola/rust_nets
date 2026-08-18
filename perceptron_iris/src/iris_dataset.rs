@@ -11,6 +11,7 @@ use burn::data::{dataloader::batcher::Batcher, dataset::InMemDataset};
 
 use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
 use burn::data::dataloader::DataLoaderBuilder;
+//use std::any::Any;
 use std::sync::Arc;
 
 use burn::data::dataloader::DataLoader;
@@ -21,8 +22,9 @@ pub const VALIDATION_INTERVAL: usize = 1;
 pub const CHECKPOINT_INTERVAL: usize = 5;
 
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, EnumIter, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, EnumIter, Deserialize, Serialize)]
 pub enum IrisClass {
+    #[default]
     Setosa = 0,
     Versicolour = 1,
     Virginica = 2,
@@ -181,7 +183,17 @@ pub struct IrisBatch<B: Backend> {
 }
 
 #[derive(Clone, Default)]
-pub struct IrisBatcher {}
+pub struct IrisBatcher {
+    target_class: IrisClass,
+}
+
+impl IrisBatcher {
+    pub fn new(target_class: IrisClass) -> Self {
+        Self {
+            target_class: target_class,
+        }
+    }
+}
 
 // El trait Batcher define cómo convertir un Vec<IrisItem> en un IrisBatch}
 impl<B: Backend> Batcher<B, IrisItem, IrisBatch<B>> for IrisBatcher {
@@ -193,7 +205,7 @@ impl<B: Backend> Batcher<B, IrisItem, IrisBatch<B>> for IrisBatcher {
 
         for item in items {
             features_vec.extend_from_slice(&item.features);
-            targets_vec.push(item.label);
+            targets_vec.push(if item.label == self.target_class as i32 { 1 } else { 0 });
         }
 
         let features = Tensor::from_data(TensorData::new(features_vec, [batch_size, Feature::COUNT]), device);
@@ -208,10 +220,11 @@ impl<B: Backend> Batcher<B, IrisItem, IrisBatch<B>> for IrisBatcher {
 
 pub fn build_dataloaders<B: Backend>(
     mut items: Vec<IrisItem>,
-    seed: u64
+    seed: u64,
+    target_class: IrisClass,
 ) -> PolarsResult<(
     Arc<dyn DataLoader<B, IrisBatch<B>>>, 
-    Arc<dyn DataLoader<B, IrisBatch<B>>>
+    Arc<dyn DataLoader<B, IrisBatch<B>>>,
 )> {
     // Barajar los datos usando la semilla proporcionada para reproducibilidad
     let mut rng = StdRng::seed_from_u64(seed);
@@ -226,8 +239,8 @@ pub fn build_dataloaders<B: Backend>(
     let val_dataset = InMemDataset::new(val_items.to_vec());
 
     // Construir los DataLoaders
-    let batcher_train = IrisBatcher::default();
-    let batcher_val = IrisBatcher::default();
+    let batcher_train = IrisBatcher::new(target_class);
+    let batcher_val = IrisBatcher::new(target_class);
 
     let train_loader = DataLoaderBuilder::new(batcher_train)
         .batch_size(BATCH_SIZE)
