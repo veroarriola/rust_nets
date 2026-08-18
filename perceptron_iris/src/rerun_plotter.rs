@@ -4,8 +4,10 @@ use crate::iris_dataset::{IrisClass, IrisDataset, Feature, FEATURE_LABELS};
 
 use burn::tensor::Tensor;
 use burn::tensor::backend::Backend;
+use burn::module::Param;
 use burn::train::ClassificationOutput;
 use crate::training_worker::{MyBackend, TrainingConfig};
+use crate::burn_perceptron::Perceptron;
 
 use std::error::Error;
 
@@ -247,6 +249,40 @@ pub fn plot_classification_batch(rec: &RecordingStream, output: &ClassificationO
     }
 }
 
+
+
+pub fn graficar_parametros<B: Backend>(
+    rec: &rerun::RecordingStream,
+    model: &Perceptron<B>, // Tu modelo
+    etiquetas: &[&str; 4], // Tus FEATURE_LABELS
+) {
+    // 1. Extraer los pesos de la GPU/CPU a RAM
+    let pesos_tensor = model.linear.weight.val();
+    let pesos_data = pesos_tensor.into_data();
+    let pesos_slice = pesos_data.as_slice::<f32>().unwrap();
+
+    // 2. Extraer el sesgo (viene como Option porque es opcional en Burn)
+    if let Some(bias_param) = &model.linear.bias {
+        let bias_tensor = bias_param.val();
+        let bias_data = bias_tensor.into_data();
+        let bias_slice = bias_data.as_slice::<f32>().unwrap();
+        
+        // Graficamos el sesgo
+        rec.log(
+            "parametros/sesgo", 
+            &rerun::Scalars::new([bias_slice[0] as f64])
+        ).unwrap();
+    }
+
+    // 3. Graficamos cada peso individualmente asociado a su etiqueta
+    for i in 0..etiquetas.len() {
+        let ruta = format!("parametros/pesos/{}", etiquetas[i]);
+        rec.log(
+            ruta, 
+            &rerun::Scalars::new([pesos_slice[i] as f64])
+        ).unwrap();
+    }
+}
 
 
 pub struct ClassificationPlotter {

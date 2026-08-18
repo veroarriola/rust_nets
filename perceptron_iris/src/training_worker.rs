@@ -395,6 +395,7 @@ pub async fn worker_loop(
                         training_config.seed,
                     );
                     let _ = rec.log(loss_path, &rerun::Scalars::new([average_train_loss as f64]));
+                    rerun_plotter::graficar_parametros(&rec, trainer.model.as_ref().expect("Graficando durante entrenamiento"), &iris_dataset::FEATURE_LABELS);
                 }
 
                 println!("Época {}: Loss Media = {:.4}", training_config.current_epoch, average_train_loss);

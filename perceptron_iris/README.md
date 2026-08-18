@@ -14,3 +14,20 @@ En este repositorio se ejemplifica el proceso completo para analizar el comporta
 ```
 cargo run
 ```
+
+## Resultados interesantes
+
+**Convergencia rápida**
+- Objetivo: setosa
+- Semilla: 10
+- Épocas: 11
+
+**Convergencia lenta**
+- Objetivo: setosa
+- Semilla: 42
+- Épocas: 61
+
+**No convergencia**
+- Objetivo: versicolour
+- Semilla: 10
+- Épocas: 1000

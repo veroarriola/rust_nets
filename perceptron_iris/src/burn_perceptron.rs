@@ -1,4 +1,4 @@
-use crate::iris_dataset::IrisBatch;
+use crate::iris_dataset::{IrisBatch, NUM_FEATURES};
 
 // Red
 use burn::{
@@ -24,7 +24,7 @@ use burn::{
 #[derive(Module, Debug)]
 pub struct Perceptron<B: Backend> {
     // La capa lineal maneja los pesos (W) y el sesgo (b)
-    linear: Linear<B>,
+    pub linear: Linear<B>,
     loss_fn: BinaryCrossEntropyLoss<B>,
 }
 
@@ -32,7 +32,9 @@ impl<B: Backend> Perceptron<B> {
     /// Inicializa el perceptrón en el dispositivo especificado (CPU o GPU)
     pub fn new(device: &B::Device) -> Self {
         // 4 entradas (características de Iris) y 1 salida (clasificación binaria)
-        let linear = LinearConfig::new(4, 1).init(device);
+        let linear = LinearConfig::new(NUM_FEATURES, 1)
+            .with_bias(true)    // <-- Aquí controlas el sesgo (true por defecto)
+            .init(device);
         let loss_fn = BinaryCrossEntropyLossConfig::new().init(device);
         Self { linear, loss_fn }
     }

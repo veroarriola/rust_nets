@@ -85,6 +85,7 @@ pub const FEATURE_LABELS: [&str; Feature::COUNT] = [
     "petal_width"
 ];
 
+pub const NUM_FEATURES: usize = 4;
 
 /*
  * Conjunto de datos para Polars
