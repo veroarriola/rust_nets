@@ -360,6 +360,7 @@ pub async fn worker_loop(
                     
                     // grads, (output: loss, predictions, batch.targets)
                     let output = TrainStep::step(trainer.model.as_ref().expect("Entrenando sin ejecutar Start"), batch);
+                    print!("{}\n{}\n", output.item.output, output.item.targets);
                     total_loss += output.item.loss.clone().into_data().to_vec::<f32>().unwrap()[0];
 
                     trainer.model = Some(trainer.optimizer.step(training_config.lr, trainer.model.expect("Entrenando sin iniciar."), output.grads));
