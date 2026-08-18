@@ -5,7 +5,7 @@ use crate::iris_dataset::{IrisClass, IrisDataset, Feature, FEATURE_LABELS};
 use burn::tensor::Tensor;
 use burn::tensor::backend::Backend;
 use burn::train::ClassificationOutput;
-use crate::training_worker::MyBackend;
+use crate::training_worker::{MyBackend, TrainingConfig};
 
 use std::error::Error;
 
@@ -250,15 +250,17 @@ pub fn plot_classification_batch(rec: &RecordingStream, output: &ClassificationO
 
 
 pub struct ClassificationPlotter {
+    dataset_name: String,
     epoch_features: Vec<f32>, // Guardará TODAS las dimensiones aplanadas
     epoch_is_correct: Vec<bool>, // Guardará si el modelo atinó o no
 }
 
 impl ClassificationPlotter {
-    pub fn new() -> Self {
+    pub fn new(dataset_name: String) -> Self {
         let epoch_features = Vec::new();
         let epoch_is_correct = Vec::new();
         Self {
+            dataset_name,
             epoch_features,
             epoch_is_correct,
         }
@@ -280,15 +282,36 @@ impl ClassificationPlotter {
 
         let batch_size = preds.len();
 
-        // 1. Guardamos todos los features del lote tal cual (copia rápida en RAM)
+        // 1. Guardamos todas las características del lote tal cual (copia rápida en RAM)
         self.epoch_features.extend_from_slice(features_slice);
 
-        // 2. Evaluamos la corrección de cada elemento y lo guardamos
+        // 2. Evaluamos la correctez de cada elemento y lo guardamos
         for i in 0..batch_size {
             let pred_label = if preds[i] >= 0.5 { 1 } else { 0 };
             let is_correct = pred_label == targets[i];
             self.epoch_is_correct.push(is_correct);
         }
+    }
+
+    pub fn plot_accuracy(
+        &mut self,
+        rec: &rerun::RecordingStream,
+        training_config: &TrainingConfig,
+    ) {
+        let total_muestras = self.epoch_is_correct.len() as f32;
+        let correctos = self.epoch_is_correct.iter().filter(|&&c| c).count() as f32;
+
+        // Representado como porcentaje (0.0 a 100.0) o de 0.0 a 1.0, lo que prefieras
+        let accuracy = (correctos / total_muestras) * 100.0;
+
+        let loss_path = format!(
+            "metrics/accuracy_{}/target_{}/lr_{}/seed_{}",
+            self.dataset_name,
+            training_config.target_class.target_name(),
+            training_config.lr,
+            training_config.seed,
+        );
+        rec.log(loss_path, &rerun::Scalars::new([accuracy as f64])).unwrap();
     }
 
     pub fn plot_combinations(
@@ -321,8 +344,8 @@ impl ClassificationPlotter {
                 // Construimos las rutas de Rerun usando tus etiquetas de texto
                 let label_x = labels[i];
                 let label_y = labels[j];
-                let path_correcta = format!("dataset/{} (cm) vs {} (cm)/correct/{}", label_x, label_y, target_name);
-                let path_incorrecta = format!("dataset/{} (cm) vs {} (cm)/incorrect/{}", label_x, label_y, target_name);
+                let path_correcta = format!("dataset/{} (cm) vs {} (cm)/correct/{}/{}", label_x, label_y, target_name, self.dataset_name);
+                let path_incorrecta = format!("dataset/{} (cm) vs {} (cm)/incorrect/{}/{}", label_x, label_y, target_name, self.dataset_name);
 
                 // Aciertos
                 let triangles = generar_triangulos(&correct_points, size);

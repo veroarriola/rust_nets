@@ -97,9 +97,9 @@ impl PerceptronExperimenter {
                 status_bar_message: None,
 
                 status: TrainingStatus::Idle,
-                input_seed: "42".to_string(),
+                input_seed: "10".to_string(),
                 input_lr: "0.001".to_string(),
-                input_epochs: "10".to_string(),
+                input_epochs: "12".to_string(),
                 current_epoch: 0,
                 current_loss: 0.0,
                 current_batch: 0,
@@ -116,6 +116,9 @@ impl PerceptronExperimenter {
         match message {
             UiMessage::TargetClassSelected(iris_class) => {
                 self.target_class = Some(iris_class);
+                self.current_epoch = 0;
+                self.current_batch = 0;
+                self.current_loss = 0.0;
                 if let Some(tx) = &self.worker_tx {
                     let _ = tx.send(ToWorker::TargetSelected(iris_class));
                 }

@@ -258,9 +258,9 @@ impl Trainer {
         }
     }
 
-    fn plot_current_classification_status(&mut self, target_class: IrisClass) {
+    fn plot_current_classification_status(&mut self, training_config: &TrainingConfig) {
         if let Some(rec) = &self.rec {
-            let mut plotter = ClassificationPlotter::new();
+            let mut plotter = ClassificationPlotter::new(String::from("train"));
 
             if let Some(train_data_loader) = &self.train_data_loader {
                 for batch in train_data_loader.iter() {
@@ -270,6 +270,10 @@ impl Trainer {
                     plotter.accumulate_batch(&output, &inputs);
                 }
             }
+            plotter.plot_accuracy(rec, training_config);
+            plotter.plot_combinations(&rec, &iris_dataset::FEATURE_LABELS, &training_config.target_class.target_name());
+
+            plotter = ClassificationPlotter::new(String::from("val"));
             if let Some(val_data_loader) = &self.val_data_loader {
                 for batch in val_data_loader.iter() {
                     let inputs = batch.inputs.clone();
@@ -277,8 +281,9 @@ impl Trainer {
                     plotter.accumulate_batch(&output, &inputs);
                 }
             }
-            plotter.plot_combinations(&rec, &iris_dataset::FEATURE_LABELS, &target_class.target_name());
-            self.rerun_time += 1;
+            plotter.plot_accuracy(rec, training_config);
+            plotter.plot_combinations(&rec, &iris_dataset::FEATURE_LABELS, &training_config.target_class.target_name());
+            //self.rerun_time += 1;
         }
     }
 }
@@ -309,6 +314,8 @@ pub async fn worker_loop(
     while let Some(msg) = rx.recv().await {
         if let ToWorker::TargetSelected(target_class) = msg {
             println!("Trabajador recibió clase objetivo: {:?}", target_class);
+            trainer.stop();
+            stop_training = false;
             trainer.plot_dataset_with_target(target_class);
         }
         else if let ToWorker::LoadCheckpoint(_string) = msg {
@@ -360,7 +367,7 @@ pub async fn worker_loop(
                     
                     // grads, (output: loss, predictions, batch.targets)
                     let output = TrainStep::step(trainer.model.as_ref().expect("Entrenando sin ejecutar Start"), batch);
-                    print!("{}\n{}\n", output.item.output, output.item.targets);
+                    //print!("Salidas: {}\nObjetivos: {}\n", output.item.output, output.item.targets);
                     total_loss += output.item.loss.clone().into_data().to_vec::<f32>().unwrap()[0];
 
                     trainer.model = Some(trainer.optimizer.step(training_config.lr, trainer.model.expect("Entrenando sin iniciar."), output.grads));
@@ -382,7 +389,7 @@ pub async fn worker_loop(
                     rec.set_time_sequence("epoca", training_config.current_epoch as i64);
 
                     let loss_path = format!(
-                        "metrics/target_{}/lr_{}/seed_{}/loss_train",
+                        "metrics/loss_train/target_{}/lr_{}/seed_{}",
                         training_config.target_class.target_name(),
                         training_config.lr,
                         training_config.seed,
@@ -405,7 +412,7 @@ pub async fn worker_loop(
 
                     if let Some(rec) = &trainer.rec {
                         let loss_path = format!(
-                            "metrics/target_{}/lr_{}/seed_{}/loss_val",
+                            "metrics/loss_val/target_{}/lr_{}/seed_{}",
                             training_config.target_class.target_name(),
                             training_config.lr,
                             training_config.seed,
@@ -413,7 +420,7 @@ pub async fn worker_loop(
                         let _ = rec.log(loss_path, &rerun::Scalars::new([val_error as f64]));
                     }
 
-                    trainer.plot_current_classification_status(training_config.target_class);
+                    trainer.plot_current_classification_status(&training_config);
                 }
 
                 // --- INTEGRACIÓN CON RERUN E ICED ---
