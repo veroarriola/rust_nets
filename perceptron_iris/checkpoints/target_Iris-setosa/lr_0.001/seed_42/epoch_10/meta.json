@@ -1,0 +1,9 @@
+{
+  "target_class": "Setosa",
+  "seed": 42,
+  "lr": 0.001,
+  "target_epochs": 61,
+  "current_epoch": 10,
+  "current_batch": 0,
+  "save_checkpoints": true
+}

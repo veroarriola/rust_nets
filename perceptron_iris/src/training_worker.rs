@@ -33,6 +33,7 @@ use crate::iris_dataset::{
 use std::fs;
 use burn::prelude::Module;
 use burn::record::{CompactRecorder, Recorder};
+use burn::store::{BurnToPyTorchAdapter, SafetensorsStore, ModuleSnapshot};
 
 
 /*
@@ -252,6 +253,13 @@ impl Trainer {
         
         let meta_file = std::fs::File::create(format!("{}/meta.json", dir_path)).unwrap();
         serde_json::to_writer_pretty(meta_file, &training_config).expect("Fallo al escribir meta.json");
+
+
+        // 3. Guardar para uso desde pytorch
+        let mut store = SafetensorsStore::from_file(format!("{}/for_pytorch.safetensors", dir_path))
+            .with_to_adapter(BurnToPyTorchAdapter)
+            .skip_enum_variants(true);
+        let _ = self.model.as_ref().expect("Ejecutando save_checkpoint para pytorch sin ejecutar Start").save_into(&mut store);
 
         return dir_path
     }
